@@ -1,7 +1,7 @@
 mode: client
 verbose: 6
 appname: rabbit-client
-listen: 127.0.0.1:27791
+listen: socks5://127.0.0.1:27791
 rabbit-addr:
   - 127.0.0.1:8112
   - 127.0.0.1:8111
