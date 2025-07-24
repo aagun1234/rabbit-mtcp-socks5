@@ -1,6 +1,9 @@
 mode: server
+#运行模式，客户端或者服务端
 verbose: 6
+#0~6
 appname: rabbit-server
+#记录到syslog中的标识
 rabbit-addr:
   - 0.0.0.0:8111
   - 0.0.0.0:8112

@@ -1,4 +1,5 @@
 mode: client
+#运行模式，客户端或者服务端
 verbose: 6
 #0~6
 appname: rabbit-client
@@ -11,6 +12,7 @@ listen: socks5://127.0.0.1:27791
 rabbit-addr:
   - 127.0.0.1:8112
   - 127.0.0.1:8111
+#远端服务地址，必须是要同一个rabbit进程侦听的多个地址端口
 tunnelN: 4
 retry-failed: false
 #某个远端连不上时候是否坚持重试（true），还是放弃只选择能连的连（false）
