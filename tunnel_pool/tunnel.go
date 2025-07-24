@@ -31,6 +31,7 @@ type Tunnel struct {
 	LastActivity atomic.Int64
 	LatencyNano  atomic.Int64
 	IsClientMode bool // 标识是客户端还是服务端模式
+	IsActive     bool
 }
 
 // Create a new tunnel from a net.Conn and cipher with random tunnelID
@@ -65,6 +66,7 @@ func newTunnelWithID(wsConn net.Conn, ciph tunnel.Cipher, peerID uint32) Tunnel 
 
 func (tunnel *Tunnel) SetLastActive() {
 	tunnel.LastActivity.Store(time.Now().UnixNano())
+	tunnel.IsActive = true
 }
 
 func (tunnel *Tunnel) GetLastActiveStr() string {
@@ -317,7 +319,7 @@ func (tunnel *Tunnel) PingPong() {
 	}
 
 	tunnel.logger.InfoAln("PingPong started.")
-
+	tunnel.SetLastActive()
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -334,8 +336,15 @@ func (tunnel *Tunnel) PingPong() {
 				tunnel.logger.Debugf("Sending Ping to tunnel, with local latency: %d us", tunnel.GetLatencyNano()/1000)
 				tunnel.packThenSend(blk, nil)
 			}
+			if (time.Now().UnixNano()-tunnel.GetLastActive())/1e9 > int64(PingInterval+TunnelRecvTimeoutSec) {
+				tunnel.logger.Warnln("PingPong timeout, going to close tunnel.")
+				tunnel.IsActive = false
+				tunnel.closeThenCancel()
+				break
+			}
 		}
 	}
+	tunnel.logger.InfoAln("PingPong ended.")
 }
 
 func (tunnel *Tunnel) GetPeerID() uint32 {

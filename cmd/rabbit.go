@@ -355,6 +355,7 @@ func parseFlags() (pass bool, cfg *Config) {
 	tunnel_pool.PingInterval = cfg.PingIntervalSec
 	//tunnel_pool.SendQueueSize          = cfg.SendQueueSize
 	tunnel_pool.RecvQueueSize = cfg.RecvQueueSize
+	tunnel_pool.TunnelRecvTimeoutSec = cfg.RecvTimeoutSec
 
 	if cfg.Mode == "c" || cfg.Mode == "client" {
 		cfg.mode = ClientMode
