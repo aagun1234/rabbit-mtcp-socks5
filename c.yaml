@@ -1,15 +1,52 @@
 mode: client
 verbose: 6
+#0~6
 appname: rabbit-client
+#记录到syslog中的标识
 listen: socks5://127.0.0.1:27791
+#listen: 127.0.0.1:27791
+#不带socks5://的就是普通TCP侦听通过服务端转发到dest
+#带socks5://就直接通过服务端代理出网
+#listen: socks5://username:password@127.0.0.1:27791
 rabbit-addr:
   - 127.0.0.1:8112
   - 127.0.0.1:8111
 tunnelN: 4
-retry-failed: true
+retry-failed: false
+#某个远端连不上时候是否坚持重试（true），还是放弃只选择能连的连（false）
 use-syslog: true
+#是否记录到syslog（linux）
 dest: 127.0.0.1:7892
+#dest no use if socks5://
 ping-interval: 20
+#ping-pong测试间隔，客户端有效
 password: 1234
-#insecure: true 
-status-server: 127.0.0.1:8890  #not implemented
+#服务端客户端相同
+aead-cipher: CHACHA20-IETF-POLY1305
+#默认CHACHA20-IETF-POLY1305，可选AES-128-GCM,AES-192-GCM,AES-256-GCM
+status-server: 127.0.0.1:8890
+#状态服务器侦听地址，可以是username:password@0.0.0.0:8888 这样的形式
+#http://127.0.0.1:8890/config  返回配置信息，
+#http://127.0.0.1:8890/status  返回连接状态信息，
+#JSON格式
+status-acl: 127.0.0.1,192.168.0.0/16
+#状态服务器的IP acl
+
+dial-timeout: 6
+#连接超时
+recv-timeout: 20
+#数据超时
+buffer-timeout: 7
+reconnect-delay: 5
+#重试延迟
+outblock-timeout: 3
+max-retries: 3
+#重试次数
+order-rqueue-size: 32
+#排序队列大小
+squeue-size: 32
+#发送队列大小
+rqueue-size: 32
+#接收队列大小
+recv-buffersize: 32768
+#接收缓存大小

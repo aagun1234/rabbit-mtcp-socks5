@@ -51,15 +51,15 @@ type Config struct {
 	Password   string   `yaml:"password"`    //加密用
 	AEADCipher string   `yaml:"aead-cipher"` //加密用,CHACHA20-IETF-POLY1305,AES-128-GCM,AES-192-GCM,AES-256-GCM
 	// Client 模式配置
-	Listen          string `yaml:"listen"`       // 客户端侦听的本地TCP地址 (例如: "127.0.0.1:1080"或socks5://127.0.0.1:1080)
-	Dest            string `yaml:"dest"`         // 目标服务
-	TunnelN         int    `yaml:"tunnelN"`      //客户端发起的连接数
-	AuthKey         string `yaml:"authkey"`      // 认证密钥
-	TLSCertFile     string `yaml:"tls-certfile"` // 服务端证书文件路径
-	TLSKeyFile      string `yaml:"tls-keyfile"`  // 服务端密钥文件路径
-	Insecure        bool   `yaml:"insecure"`     // 客户端是否跳过服务端证书验证InsecureSkipVerify
-	UseSyslog       bool   `yaml:"use-syslog"`   // 客户端是否跳过服务端证书验证InsecureSkipVerify
-	RetryFailedAddr bool   `yaml:"retry-failed"` // 对于客户端连接失败的rabbit-addr，是否反复重试，如果否，则不会重试连接，直到所有的都连不上
+	Listen  string `yaml:"listen"`  // 客户端侦听的本地TCP地址 (例如: "127.0.0.1:1080"或socks5://127.0.0.1:1080)
+	Dest    string `yaml:"dest"`    // 目标服务
+	TunnelN int    `yaml:"tunnelN"` //客户端发起的连接数
+	//	AuthKey         string `yaml:"authkey"`      // 认证密钥
+	//	TLSCertFile     string `yaml:"tls-certfile"` // 服务端证书文件路径
+	//	TLSKeyFile      string `yaml:"tls-keyfile"`  // 服务端密钥文件路径
+	//	Insecure        bool   `yaml:"insecure"`     // 客户端是否跳过服务端证书验证InsecureSkipVerify
+	UseSyslog       bool `yaml:"use-syslog"`   // 客户端是否跳过服务端证书验证InsecureSkipVerify
+	RetryFailedAddr bool `yaml:"retry-failed"` // 对于客户端连接失败的rabbit-addr，是否反复重试，如果否，则不会重试连接，直到所有的都连不上
 
 	StatusServer string `yaml:"status-server"` // 状态服务侦听的本地TCP地址 (例如: "127.0.0.1:8010")
 	StatusACL    string `yaml:"status-acl"`    // 状态服务ACL
@@ -82,19 +82,19 @@ type Config struct {
 // NewDefaultConfig 返回一个默认配置实例
 func NewDefaultConfig() *Config {
 	return &Config{
-		Mode:                    "client",
-		AppName:                 "rabbit-mtcp-ws",
-		Verbose:                 4,
-		RabbitAddr:              []string{"ws://127.0.0.1:443/tunnel"},
-		Password:                "PASSWORD",
-		AEADCipher:              "CHACHA20-IETF-POLY1305",
-		Listen:                  "127.0.0.1:1080",
-		Dest:                    "",
-		TunnelN:                 4,
-		AuthKey:                 "",
-		TLSCertFile:             "",
-		TLSKeyFile:              "",
-		Insecure:                true,
+		Mode:       "client",
+		AppName:    "rabbit-mtcp-ws",
+		Verbose:    4,
+		RabbitAddr: []string{"ws://127.0.0.1:443/tunnel"},
+		Password:   "PASSWORD",
+		AEADCipher: "CHACHA20-IETF-POLY1305",
+		Listen:     "127.0.0.1:1080",
+		Dest:       "",
+		TunnelN:    4,
+		//		AuthKey:                 "",
+		//		TLSCertFile:             "",
+		//		TLSKeyFile:              "",
+		//		Insecure:                true,
 		UseSyslog:               true,
 		RetryFailedAddr:         true,
 		PingIntervalSec:         30,
@@ -122,20 +122,20 @@ func LoadConfig() (*Config, error) {
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	var (
-		modeArg                    string
-		appNameArg                 string
-		configFileArg              string
-		verboseArg                 int
-		rabbitAddrArg              string
-		passwordArg                string
-		aeadCipherArg              string
-		listenArg                  string
-		destArg                    string
-		tunnelNArg                 int
-		authKeyArg                 string
-		tlsCertFileArg             string
-		tlsKeyFileArg              string
-		insecureArg                bool
+		modeArg       string
+		appNameArg    string
+		configFileArg string
+		verboseArg    int
+		rabbitAddrArg string
+		passwordArg   string
+		aeadCipherArg string
+		listenArg     string
+		destArg       string
+		tunnelNArg    int
+		//		authKeyArg                 string
+		//		tlsCertFileArg             string
+		//		tlsKeyFileArg              string
+		//		insecureArg                bool
 		useSyslogArg               bool
 		retryFailedAddrArg         bool
 		statusServerArg            string
@@ -266,18 +266,18 @@ func LoadConfig() (*Config, error) {
 	if flagsSeen["tunnelN"] {
 		cfg.TunnelN = tunnelNArg
 	}
-	if flagsSeen["authkey"] {
-		cfg.AuthKey = authKeyArg
-	}
-	if flagsSeen["tls-certfile"] {
-		cfg.TLSCertFile = tlsCertFileArg
-	}
-	if flagsSeen["tls-keyfile"] {
-		cfg.TLSKeyFile = tlsKeyFileArg
-	}
-	if flagsSeen["insecure"] {
-		cfg.Insecure = insecureArg
-	}
+	//	if flagsSeen["authkey"] {
+	//		cfg.AuthKey = authKeyArg
+	//	}
+	//	if flagsSeen["tls-certfile"] {
+	//		cfg.TLSCertFile = tlsCertFileArg
+	//	}
+	//	if flagsSeen["tls-keyfile"] {
+	//		cfg.TLSKeyFile = tlsKeyFileArg
+	//	}
+	//	if flagsSeen["insecure"] {
+	//		cfg.Insecure = insecureArg
+	//	}
 	if flagsSeen["retry-failed"] {
 		cfg.RetryFailedAddr = retryFailedAddrArg
 	}
@@ -697,14 +697,14 @@ func main() {
 	logger.UseSyslog = mcfg.UseSyslog
 	mainlogger := logger.NewLogger("[Main]")
 
-	mainlogger.Debugf("mode: %v, password: %v, addr: %v, listen: %v, dest: %v, authkey: %v, keyfile: %v, crtfile: %v, tunnelN: %v, verbose: %v\n", mcfg.Mode, mcfg.Password, mcfg.RabbitAddr, mcfg.Listen, mcfg.Dest, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile, mcfg.TunnelN, mcfg.Verbose)
-	cipher, _ := tunnel.NewAEADCipher("CHACHA20-IETF-POLY1305", nil, mcfg.Password)
+	mainlogger.Debugf("mode: %v, password: %v, addr: %v, listen: %v, dest: %v, tunnelN: %v, verbose: %v\n", mcfg.Mode, mcfg.Password, mcfg.RabbitAddr, mcfg.Listen, mcfg.Dest, mcfg.TunnelN, mcfg.Verbose)
+	cipher, _ := tunnel.NewAEADCipher(mcfg.AEADCipher, nil, mcfg.Password)
 
 	// 初始化统计模块，使用20秒的历史窗口
 	stats.InitStats(20)
 
 	if mcfg.mode == ClientMode {
-		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, mcfg.AuthKey, mcfg.Insecure, mcfg.RetryFailedAddr)
+		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, "", true, mcfg.RetryFailedAddr)
 
 		// 使用 GetConnectionPool 方法获取连接池
 		ClientConnectionPool = c.Peer.GetConnectionPool()
@@ -724,7 +724,7 @@ func main() {
 		}
 	} else {
 
-		s := server.NewServer(cipher, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile)
+		s := server.NewServer(cipher, "", "", "")
 
 		if mcfg.StatusServer != "" {
 			go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
