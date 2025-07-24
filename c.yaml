@@ -1,0 +1,15 @@
+mode: client
+verbose: 6
+appname: rabbit-client
+listen: 127.0.0.1:27791
+rabbit-addr:
+  - 127.0.0.1:8112
+  - 127.0.0.1:8111
+tunnelN: 4
+retry-failed: true
+use-syslog: true
+dest: 127.0.0.1:7892
+ping-interval: 20
+password: 1234
+#insecure: true 
+status-server: 127.0.0.1:8890  #not implemented

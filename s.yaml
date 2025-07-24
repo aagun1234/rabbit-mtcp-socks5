@@ -1,0 +1,9 @@
+mode: server
+verbose: 6
+appname: rabbit-server
+rabbit-addr:
+  - 0.0.0.0:8111
+  - 0.0.0.0:8112
+ping-interval: 30
+password: 1234
+status-server: 127.0.0.1:8888 #not implemented

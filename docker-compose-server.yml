@@ -1,0 +1,10 @@
+rabbit-server:
+  image: ihciah/rabbit
+  ports:
+    - "9891:443/tcp"
+  environment:
+    - MODE=s
+    - PASSWORD=password
+    - RABBITADDR=:443
+    - VERBOSE=2
+  restart: always
