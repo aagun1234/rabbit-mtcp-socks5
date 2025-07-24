@@ -49,6 +49,7 @@ type Config struct {
 	Verbose    int      `yaml:"verbose"`     // 日志级别: 1-5`
 	RabbitAddr []string `yaml:"rabbit-addr"` // 服务端WebSocket URL列表 (例如: ["ws://server1:8081/tunnel", "wss://server2:8082/tunnel"])
 	Password   string   `yaml:"password"`    //加密用
+	AEADCipher string   `yaml:"aead-cipher"` //加密用,CHACHA20-IETF-POLY1305,AES-128-GCM,AES-192-GCM,AES-256-GCM
 	// Client 模式配置
 	Listen          string `yaml:"listen"`       // 客户端侦听的本地TCP地址 (例如: "127.0.0.1:1080"或socks5://127.0.0.1:1080)
 	Dest            string `yaml:"dest"`         // 目标服务
@@ -86,6 +87,7 @@ func NewDefaultConfig() *Config {
 		Verbose:                 4,
 		RabbitAddr:              []string{"ws://127.0.0.1:443/tunnel"},
 		Password:                "PASSWORD",
+		AEADCipher:              "CHACHA20-IETF-POLY1305",
 		Listen:                  "127.0.0.1:1080",
 		Dest:                    "",
 		TunnelN:                 4,
@@ -126,6 +128,7 @@ func LoadConfig() (*Config, error) {
 		verboseArg                 int
 		rabbitAddrArg              string
 		passwordArg                string
+		aeadCipherArg              string
 		listenArg                  string
 		destArg                    string
 		tunnelNArg                 int
@@ -160,6 +163,7 @@ func LoadConfig() (*Config, error) {
 	fs.StringVar(&appNameArg, "appname", "", "Application name in syslog")
 	fs.IntVar(&verboseArg, "verbose", 0, "verbose level(0~6)")
 	fs.StringVar(&rabbitAddrArg, "rabbit-addr", "", "Comma-separated list of server WebSocket URLs")
+	fs.StringVar(&aeadCipherArg, "aead-cipher", "", "aead-cipher, CHACHA20-IETF-POLY1305,AES-128-GCM,AES-192-GCM,AES-256-GCM, default: CHACHA20-IETF-POLY1305")
 	fs.StringVar(&passwordArg, "password", "", "password")
 	fs.StringVar(&listenArg, "listen", "", "[Client Only] listen address, eg: 127.0.0.1:2333 or socks5://127.0.0.1:1080")
 	fs.StringVar(&destArg, "dest", "", "[Client Only] destination address, eg: shadowsocks server address")
@@ -246,6 +250,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if flagsSeen["rabbit-addr"] {
 		cfg.RabbitAddr = splitAndTrim(rabbitAddrArg, ",")
+	}
+	if flagsSeen["aead-cipher"] {
+		cfg.AEADCipher = aeadCipherArg
 	}
 	if flagsSeen["password"] {
 		cfg.Password = passwordArg
@@ -548,7 +555,7 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 		json.NewEncoder(w).Encode(status)
 	})
 
-	statlogger.Infof("Starting status server on %s", listen)
+	statlogger.Infof("Status server listening on %s", listen)
 	if err := http.ListenAndServe(listen, handler); err != nil {
 		statlogger.Errorf("Status server error: %v", err)
 	}
@@ -669,7 +676,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 		json.NewEncoder(w).Encode(status)
 	})
 
-	statlogger.Infof("Starting status server on %s", listen)
+	statlogger.Infof("Status server listening on %s", listen)
 	if err := http.ListenAndServe(listen, handler); err != nil {
 		statlogger.Errorf("Status server error: %v", err)
 	}
@@ -688,7 +695,7 @@ func main() {
 	logger.LEVEL = mcfg.Verbose
 	logger.AppName = mcfg.AppName
 	logger.UseSyslog = mcfg.UseSyslog
-	mainlogger := logger.NewLogger("[ClientManager]")
+	mainlogger := logger.NewLogger("[Main]")
 
 	mainlogger.Debugf("mode: %v, password: %v, addr: %v, listen: %v, dest: %v, authkey: %v, keyfile: %v, crtfile: %v, tunnelN: %v, verbose: %v\n", mcfg.Mode, mcfg.Password, mcfg.RabbitAddr, mcfg.Listen, mcfg.Dest, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile, mcfg.TunnelN, mcfg.Verbose)
 	cipher, _ := tunnel.NewAEADCipher("CHACHA20-IETF-POLY1305", nil, mcfg.Password)
@@ -704,15 +711,15 @@ func main() {
 
 		if mcfg.StatusServer != "" {
 			go statusServer1(mcfg.StatusServer, mcfg.StatusACL, mcfg, &c)
-			mainlogger.Infof("Starting status server mode with address: %s\n", mcfg.StatusServer)
+			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
 
 		// 检查listen参数是否以socks5://开头
 		if strings.HasPrefix(mcfg.Listen, "socks5://") {
-			mainlogger.Infof("Starting SOCKS5 proxy mode with address: %s\n", mcfg.Listen)
+			mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
 			c.ServeForwardSocks5(mcfg.Listen)
 		} else {
-			mainlogger.Infof("Starting TCP forward mode from %s to %s\n", mcfg.Listen, mcfg.Dest)
+			mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
 			c.ServeForward(mcfg.Listen, mcfg.Dest)
 		}
 	} else {
@@ -721,12 +728,12 @@ func main() {
 
 		if mcfg.StatusServer != "" {
 			go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
-			mainlogger.Infof("Starting status server mode with address: %s\n", mcfg.StatusServer)
+			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
 		// 保存服务端的 PeerGroup 到全局变量，用于在 statusServer 中获取连接信息
 		// 由于服务端可能有多个连接池（每个 ServerPeer 一个），我们需要通过 PeerGroup 获取所有连接池
 		ServerPeerGroup = s.GetPeerGroup()
-
+		mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
 		s.Serve(mcfg.RabbitAddr)
 	}
 }
