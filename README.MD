@@ -4,6 +4,8 @@ Load configuration from yaml file. see s.yaml & c.yaml
 
 Add status server
 
+Add socks5 listen on client side
+
 Modify connection and listening parameters to support connections and listening on multiple IP addresses and ports.
 
 Add ping-pong over WebSocket to maintain connection status and measure latency. If possible, consider implementing multi-link load balancing based on latency-weighted round robin in the future.
