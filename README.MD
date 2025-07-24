@@ -1,19 +1,12 @@
 forked from ihciah/rabbit-tcp
 
-Change the TCP connection to WebSocket connection, which can directly use CDN.
-
 Load configuration from yaml file. see s.yaml & c.yaml
+
+Add status server
 
 Modify connection and listening parameters to support connections and listening on multiple IP addresses and ports.
 
 Add ping-pong over WebSocket to maintain connection status and measure latency. If possible, consider implementing multi-link load balancing based on latency-weighted round robin in the future.
-
-![rabbit-websocket](https://github.com/aagun1234/rabbit-mtcp-socks5/blob/main/20250717.png)
-
-BUT, using websocket DO NOT increase performance
-
-![Speed with rabbit-websocket](https://github.com/aagun1234/rabbit-mtcp-socks5/blob/main/test.jpg)
-
 
 # Rabbit TCP
 
