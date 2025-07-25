@@ -108,7 +108,7 @@ func NewDefaultConfig() *Config {
 		SendQueueSize:           32,
 		RecvQueueSize:           32,
 		OutboundRecvBufferSize:  32 * 1024,
-		StatusServer:            "127.0.0.1:8010",
+		StatusServer:            "",
 		StatusACL:               "",
 	}
 }
