@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,13 +101,21 @@ func (s *Stats) GetStats() map[string]interface{} {
 			recvRate = float64(recvBytes) / timeWindow
 		}
 	}
-
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
 	return map[string]interface{}{
 		"total_sent_bytes":    totalSent,
 		"total_recv_bytes":    totalRecv,
 		"connection_count":    connCount,
 		"send_rate_bytes_sec": sendRate,
 		"recv_rate_bytes_sec": recvRate,
+		"goroutine_count":     runtime.NumGoroutine(),
+		"mem_alloc":           m.Alloc,
+		"total_mem_alloc":     m.TotalAlloc,
+		"mem_sys":             m.Sys,
+		"gc_pause_ms":         float64(m.PauseTotalNs) / 1e6,
+		"gc_count":            m.NumGC,
+		"last_gc":             time.Unix(0, int64(m.LastGC)),
 	}
 	//"total_sent_bytes":    fmt.Sprintf("%.2f K", totalSent/1024),
 	//"total_recv_bytes":    fmt.Sprintf("%.2f K", totalRecv/1024),
