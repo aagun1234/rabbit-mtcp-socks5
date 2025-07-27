@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aagun1234/rabbit-mtcp-socks5/client"
 	"github.com/aagun1234/rabbit-mtcp-socks5/connection"
@@ -19,6 +20,8 @@ import (
 	"github.com/aagun1234/rabbit-mtcp-socks5/stats"
 	"github.com/aagun1234/rabbit-mtcp-socks5/tunnel"
 	"github.com/aagun1234/rabbit-mtcp-socks5/tunnel_pool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -450,6 +453,129 @@ func IsIPInSubnets(ipStr string, subnets []string) (bool, error) {
 	return false, nil
 }
 
+var (
+	// 定义所有需要的 Prometheus Metrics
+	totalSentBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "network_total_sent_bytes",
+		Help: "Total bytes sent",
+	})
+
+	totalRecvBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "network_total_recv_bytes",
+		Help: "Total bytes received",
+	})
+
+	connectionCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "network_connection_count",
+		Help: "Current active connections",
+	})
+
+	sendRate = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "network_send_rate_bps",
+		Help: "Current send rate (bytes/sec)",
+	})
+
+	recvRate = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "network_recv_rate_bps",
+		Help: "Current receive rate (bytes/sec)",
+	})
+
+	goroutineCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_goroutine_count",
+		Help: "Number of goroutines",
+	})
+
+	memAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_mem_alloc_bytes",
+		Help: "Bytes allocated and still in use",
+	})
+
+	totalMemAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_total_mem_alloc_bytes",
+		Help: "Total bytes allocated (even if freed)",
+	})
+
+	memSys = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_mem_sys_bytes",
+		Help: "Total bytes obtained from OS",
+	})
+
+	gcPauseMs = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_gc_pause_ms",
+		Help: "Total GC pause time in milliseconds",
+	})
+
+	gcCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_gc_count",
+		Help: "Total number of GC runs",
+	})
+
+	lastGcTime = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "runtime_last_gc_timestamp",
+		Help: "Timestamp of last GC (Unix seconds)",
+	})
+)
+
+func prom_init() {
+	// 注册所有 Metrics
+	prometheus.MustRegister(
+		totalSentBytes,
+		totalRecvBytes,
+		connectionCount,
+		sendRate,
+		recvRate,
+		goroutineCount,
+		memAlloc,
+		totalMemAlloc,
+		memSys,
+		gcPauseMs,
+		gcCount,
+		lastGcTime,
+	)
+}
+
+func updatePrometheusMetrics(data map[string]interface{}) {
+	// 更新网络相关指标
+	if val, ok := data["total_sent_bytes"].(float64); ok {
+		totalSentBytes.Set(val)
+	}
+	if val, ok := data["total_recv_bytes"].(float64); ok {
+		totalRecvBytes.Set(val)
+	}
+	if val, ok := data["connection_count"].(float64); ok {
+		connectionCount.Set(val)
+	}
+	if val, ok := data["send_rate_Bps"].(float64); ok {
+		sendRate.Set(val)
+	}
+	if val, ok := data["recv_rate_Bps"].(float64); ok {
+		recvRate.Set(val)
+	}
+
+	// 更新运行时指标
+	if val, ok := data["goroutine_count"].(int); ok {
+		goroutineCount.Set(float64(val))
+	}
+	if val, ok := data["mem_alloc"].(uint64); ok {
+		memAlloc.Set(float64(val))
+	}
+	if val, ok := data["total_mem_alloc"].(uint64); ok {
+		totalMemAlloc.Set(float64(val))
+	}
+	if val, ok := data["mem_sys"].(uint64); ok {
+		memSys.Set(float64(val))
+	}
+	if val, ok := data["gc_pause_ms"].(float64); ok {
+		gcPauseMs.Set(val)
+	}
+	if val, ok := data["gc_count"].(uint32); ok {
+		gcCount.Set(float64(val))
+	}
+	if val, ok := data["last_gc"].(time.Time); ok {
+		lastGcTime.Set(float64(val.Unix()))
+	}
+}
+
 func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 	statlogger := logger.NewLogger("[StatusServer]")
 	acls := strings.Split(acl, ",")
@@ -458,6 +584,12 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 			acls[0] = "0.0.0.0/0"
 		}
 	}
+	for index, acl := range acls {
+		if !strings.Contains(acl, "/") {
+			acls[index] = acl + "/32"
+		}
+	}
+
 	// 解析基本认证信息
 	var username, password string
 	if atIndex := strings.Index(listen, "@"); atIndex > 0 {
@@ -496,7 +628,7 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 		json.NewEncoder(w).Encode(cfg)
 	})
 
-	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	handler.HandleFunc("/statu/", func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
 		statlogger.InfoAf("%s request status config", ip)
 		isAllowed, err := IsIPInSubnets(ip, acls)
@@ -541,19 +673,39 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 			statlogger.Debugf("tunnelsInfo: %v", tunnelsInfo)
 		}
 
-		// 合并基本状态和统计数据
-		status := map[string]interface{}{
-			"running":     true,
-			"mode":        cfg.Mode,
-			"version":     Version,
-			"stats":       statsData,
-			"connections": connectionsInfo,
-			"tunnels":     tunnelsInfo,
-			"tunnelPool":  ClientConnectionPool.GetTunnelPoolInfo(),
+		switch r.URL.Path {
+		case "/status/":
+			status := map[string]interface{}{
+				"running":    true,
+				"mode":       cfg.Mode,
+				"version":    Version,
+				"stats":      statsData,
+				"tunnelPool": ClientConnectionPool.GetTunnelPoolInfo(),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/tunnels":
+			status := map[string]interface{}{
+				"tunnels": tunnelsInfo,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/connections":
+			status := map[string]interface{}{
+				"connections": connectionsInfo,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/metrics":
+			updatePrometheusMetrics(statsData)
+			promhttp.Handler().ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		statlogger.Debugf("Status: %v", status)
-		json.NewEncoder(w).Encode(status)
+
 	})
 
 	statlogger.Infof("Status server listening on %s", listen)
@@ -570,6 +722,12 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			acls[0] = "0.0.0.0/0"
 		}
 	}
+	for index, acl := range acls {
+		if !strings.Contains(acl, "/") {
+			acls[index] = acl + "/32"
+		}
+	}
+
 	// 解析基本认证信息
 	var username, password string
 	if atIndex := strings.Index(listen, "@"); atIndex > 0 {
@@ -608,7 +766,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 		json.NewEncoder(w).Encode(cfg)
 	})
 
-	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	handler.HandleFunc("/status/", func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
 		statlogger.InfoAf("%s request status config", ip)
 		isAllowed, err := IsIPInSubnets(ip, acls)
@@ -662,19 +820,39 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			}
 		}
 
-		// 合并基本状态和统计数据
-		status := map[string]interface{}{
-			"running":     true,
-			"mode":        cfg.Mode,
-			"version":     Version,
-			"stats":       statsData,
-			"connections": connectionsInfo,
-			"tunnels":     tunnelsInfo,
-			"tunnelpools": tunnelPoolsInfo,
+		switch r.URL.Path {
+		case "/status/":
+			status := map[string]interface{}{
+				"running":    true,
+				"mode":       cfg.Mode,
+				"version":    Version,
+				"stats":      statsData,
+				"tunnelPool": tunnelPoolsInfo,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/tunnels":
+			status := map[string]interface{}{
+				"tunnels": tunnelsInfo,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/connections":
+			status := map[string]interface{}{
+				"connections": connectionsInfo,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			statlogger.Debugf("Status: %v", status)
+			json.NewEncoder(w).Encode(status)
+		case "/status/metrics":
+			updatePrometheusMetrics(statsData)
+			promhttp.Handler().ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		statlogger.Debugf("Status: %v", status)
-		json.NewEncoder(w).Encode(status)
+
 	})
 
 	statlogger.Infof("Status server listening on %s", listen)
@@ -703,7 +881,7 @@ func main() {
 
 	// 初始化统计模块，使用20秒的历史窗口
 	stats.InitStats(20)
-
+	prom_init()
 	if mcfg.mode == ClientMode {
 		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, "", true, mcfg.RetryFailedAddr)
 
