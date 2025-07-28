@@ -360,11 +360,12 @@ func parseFlags() (pass bool, cfg *Config) {
 	tunnel_pool.RecvQueueSize = cfg.RecvQueueSize
 	tunnel_pool.TunnelRecvTimeoutSec = cfg.RecvTimeoutSec
 
-	if cfg.Mode == "c" || cfg.Mode == "client" {
+	switch cfg.Mode {
+	case "c", "client":
 		cfg.mode = ClientMode
-	} else if cfg.Mode == "s" || cfg.Mode == "server" {
+	case "s", "server":
 		cfg.mode = ServerMode
-	} else {
+	default:
 		log.Printf("Unsupported mode %s.\n", cfg.Mode)
 		pass = false
 		return
@@ -456,62 +457,67 @@ func IsIPInSubnets(ipStr string, subnets []string) (bool, error) {
 var (
 	// 定义所有需要的 Prometheus Metrics
 	totalSentBytes = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "network_total_sent_bytes",
+		Name: "rabbit_network_total_sent_bytes",
 		Help: "Total bytes sent",
 	})
 
 	totalRecvBytes = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "network_total_recv_bytes",
+		Name: "rabbit_network_total_recv_bytes",
 		Help: "Total bytes received",
 	})
 
 	connectionCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "network_connection_count",
+		Name: "rabbit_network_connection_count",
 		Help: "Current active connections",
 	})
 
+	tunnelCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_network_tunnel_count",
+		Help: "Current active tunnels",
+	})
+
 	sendRate = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "network_send_rate_bps",
+		Name: "rabbit_network_send_rate_bps",
 		Help: "Current send rate (bytes/sec)",
 	})
 
 	recvRate = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "network_recv_rate_bps",
+		Name: "rabbit_network_recv_rate_bps",
 		Help: "Current receive rate (bytes/sec)",
 	})
 
 	goroutineCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_goroutine_count",
+		Name: "rabbit_runtime_goroutine_count",
 		Help: "Number of goroutines",
 	})
 
 	memAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_mem_alloc_bytes",
+		Name: "rabbit_runtime_mem_alloc_bytes",
 		Help: "Bytes allocated and still in use",
 	})
 
 	totalMemAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_total_mem_alloc_bytes",
+		Name: "rabbit_runtime_total_mem_alloc_bytes",
 		Help: "Total bytes allocated (even if freed)",
 	})
 
 	memSys = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_mem_sys_bytes",
+		Name: "rabbit_runtime_mem_sys_bytes",
 		Help: "Total bytes obtained from OS",
 	})
 
 	gcPauseMs = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_gc_pause_ms",
+		Name: "rabbit_runtime_gc_pause_ms",
 		Help: "Total GC pause time in milliseconds",
 	})
 
 	gcCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_gc_count",
+		Name: "rabbit_runtime_gc_count",
 		Help: "Total number of GC runs",
 	})
 
 	lastGcTime = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "runtime_last_gc_timestamp",
+		Name: "rabbit_runtime_last_gc_timestamp",
 		Help: "Timestamp of last GC (Unix seconds)",
 	})
 )
@@ -521,6 +527,7 @@ func prom_init() {
 	prometheus.MustRegister(
 		totalSentBytes,
 		totalRecvBytes,
+		tunnelCount,
 		connectionCount,
 		sendRate,
 		recvRate,
@@ -536,14 +543,17 @@ func prom_init() {
 
 func updatePrometheusMetrics(data map[string]interface{}) {
 	// 更新网络相关指标
-	if val, ok := data["total_sent_bytes"].(float64); ok {
-		totalSentBytes.Set(val)
+	if val, ok := data["total_sent_bytes"].(uint64); ok {
+		totalSentBytes.Set(float64(val))
 	}
-	if val, ok := data["total_recv_bytes"].(float64); ok {
-		totalRecvBytes.Set(val)
+	if val, ok := data["total_recv_bytes"].(uint64); ok {
+		totalRecvBytes.Set(float64(val))
 	}
-	if val, ok := data["connection_count"].(float64); ok {
-		connectionCount.Set(val)
+	if val, ok := data["connection_count"].(int); ok {
+		connectionCount.Set(float64(val))
+	}
+	if val, ok := data["tunnel_count"].(int); ok {
+		tunnelCount.Set(float64(val))
 	}
 	if val, ok := data["send_rate_Bps"].(float64); ok {
 		sendRate.Set(val)
@@ -676,11 +686,12 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 		switch r.URL.Path {
 		case "/status/":
 			status := map[string]interface{}{
-				"running":    true,
-				"mode":       cfg.Mode,
-				"version":    Version,
-				"stats":      statsData,
-				"tunnelPool": ClientConnectionPool.GetTunnelPoolInfo(),
+				"running":         true,
+				"mode":            cfg.Mode,
+				"version":         Version,
+				"stats":           statsData,
+				"tunnel_pool":     ClientConnectionPool.GetTunnelPoolInfo(),
+				"connection_pool": ClientConnectionPool.GetConnectionPoolInfo(),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			statlogger.Debugf("Status: %v", status)
@@ -800,9 +811,11 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 		var connectionsInfo []map[string]interface{}
 		var tunnelsInfo []map[string]interface{}
 		var tunnelPoolsInfo []map[string]interface{}
+		var connPoolsInfo []map[string]interface{}
 		connectionsInfo = make([]map[string]interface{}, 0)
 		tunnelsInfo = make([]map[string]interface{}, 0)
 		tunnelPoolsInfo = make([]map[string]interface{}, 0)
+		connPoolsInfo = make([]map[string]interface{}, 0)
 		if cfg.mode == ServerMode {
 			ServerPeerGroup = s.GetPeerGroup()
 			// 服务端模式：从所有 ServerPeer 的连接池获取连接信息
@@ -812,6 +825,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			tunnelPools := ServerPeerGroup.GetAllTunnelPools()
 			// 遍历所有连接池，获取连接信息
 			for _, pool := range connectionPools {
+				connPoolsInfo = append(connPoolsInfo, pool.GetConnectionPoolInfo())
 				connectionsInfo = append(connectionsInfo, pool.GetConnectionsInfo()...)
 			}
 			for _, tpool := range tunnelPools {
@@ -823,11 +837,12 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 		switch r.URL.Path {
 		case "/status/":
 			status := map[string]interface{}{
-				"running":    true,
-				"mode":       cfg.Mode,
-				"version":    Version,
-				"stats":      statsData,
-				"tunnelPool": tunnelPoolsInfo,
+				"running":         true,
+				"mode":            cfg.Mode,
+				"version":         Version,
+				"stats":           statsData,
+				"tunnel_pool":     tunnelPoolsInfo,
+				"connection_pool": connPoolsInfo,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			statlogger.Debugf("Status: %v", status)

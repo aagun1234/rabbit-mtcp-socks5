@@ -12,6 +12,7 @@ type Stats struct {
 	mutex           sync.RWMutex
 	totalSentBytes  uint64
 	totalRecvBytes  uint64
+	tunnelCount     int32
 	connectionCount int32
 
 	// 用于计算速率的历史数据
@@ -39,6 +40,16 @@ func (s *Stats) AddSentBytes(bytes uint64) {
 // AddRecvBytes 增加已接收字节数
 func (s *Stats) AddRecvBytes(bytes uint64) {
 	atomic.AddUint64(&s.totalRecvBytes, bytes)
+}
+
+// IncrementTunnelCount 增加连接计数
+func (s *Stats) IncrementTunnelCount() {
+	atomic.AddInt32(&s.tunnelCount, 1)
+}
+
+// DecrementTunnelCount 减少连接计数
+func (s *Stats) DecrementTunnelCount() {
+	atomic.AddInt32(&s.tunnelCount, -1)
 }
 
 // IncrementConnectionCount 增加连接计数
@@ -82,7 +93,8 @@ func (s *Stats) GetStats() map[string]interface{} {
 	// 获取当前值
 	totalSent := atomic.LoadUint64(&s.totalSentBytes)
 	totalRecv := atomic.LoadUint64(&s.totalRecvBytes)
-	connCount := atomic.LoadInt32(&s.connectionCount)
+	tunnelCount := atomic.LoadInt32(&s.tunnelCount)
+	connectionCount := atomic.LoadInt32(&s.connectionCount)
 
 	// 计算发送和接收速率（字节/秒）
 	var sendRate, recvRate float64
@@ -106,7 +118,8 @@ func (s *Stats) GetStats() map[string]interface{} {
 	return map[string]interface{}{
 		"total_sent_bytes": totalSent,
 		"total_recv_bytes": totalRecv,
-		"connection_count": connCount,
+		"tunnel_count":     tunnelCount,
+		"connection_count": connectionCount,
 		"send_rate_Bps":    sendRate,
 		"recv_rate_Bps":    recvRate,
 		"goroutine_count":  runtime.NumGoroutine(),

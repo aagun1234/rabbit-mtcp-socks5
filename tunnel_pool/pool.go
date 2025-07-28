@@ -52,9 +52,9 @@ func (tp *TunnelPool) AddTunnel(tunnel *Tunnel) {
 
 	// 更新连接计数
 	if tunnel.IsClientMode {
-		stats.ClientStats.IncrementConnectionCount()
+		stats.ClientStats.IncrementTunnelCount()
 	} else {
-		stats.ServerStats.IncrementConnectionCount()
+		stats.ServerStats.IncrementTunnelCount()
 	}
 
 	tunnel.ctx, tunnel.cancel = context.WithCancel(tp.ctx)
@@ -81,9 +81,9 @@ func (tp *TunnelPool) RemoveTunnel(tunnel *Tunnel) {
 
 		// 更新连接计数
 		if tunnel.IsClientMode {
-			stats.ClientStats.DecrementConnectionCount()
+			stats.ClientStats.DecrementTunnelCount()
 		} else {
-			stats.ServerStats.DecrementConnectionCount()
+			stats.ServerStats.DecrementTunnelCount()
 		}
 	}
 }
@@ -95,6 +95,11 @@ func (tp *TunnelPool) GetSendQueue() chan block.Block {
 func (tp *TunnelPool) GetRecvQueue() chan block.Block {
 	return tp.recvQueue
 }
+
+func (tp *TunnelPool) GetTunnelMappingLen() int {
+	return len(tp.tunnelMapping)
+}
+
 
 // GetConnectionsInfo 获取所有连接的详细信息
 func (tp *TunnelPool) GetTunnelConnsInfo() []map[string]interface{} {

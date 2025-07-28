@@ -7,6 +7,7 @@ import (
 	"github.com/aagun1234/rabbit-mtcp-socks5/block"
 	"github.com/aagun1234/rabbit-mtcp-socks5/connection"
 	"github.com/aagun1234/rabbit-mtcp-socks5/logger"
+	"github.com/aagun1234/rabbit-mtcp-socks5/stats"
 	"github.com/aagun1234/rabbit-mtcp-socks5/tunnel_pool"
 )
 
@@ -72,6 +73,8 @@ func (cp *ConnectionPool) addConnection(conn connection.Connection) {
 	cp.mappingLock.Lock()
 	defer cp.mappingLock.Unlock()
 	cp.connectionMapping[conn.GetConnectionID()] = conn
+	stats.ClientStats.IncrementConnectionCount()
+	stats.ServerStats.IncrementConnectionCount()
 	go conn.OrderedRelay(conn)
 }
 
@@ -81,6 +84,9 @@ func (cp *ConnectionPool) removeConnection(conn connection.Connection) {
 	defer cp.mappingLock.Unlock()
 	if _, ok := cp.connectionMapping[conn.GetConnectionID()]; ok {
 		delete(cp.connectionMapping, conn.GetConnectionID())
+		stats.ClientStats.DecrementConnectionCount()
+		stats.ServerStats.DecrementConnectionCount()
+
 	}
 }
 
@@ -159,6 +165,20 @@ func (cp *ConnectionPool) GetConnectionsInfo() []map[string]interface{} {
 
 	return result
 }
+
+func (cp *ConnectionPool) GetConnectionPoolInfo() map[string]interface{} {
+	cp.mappingLock.RLock()
+	defer cp.mappingLock.RUnlock()
+
+	connectionPoolInfo := map[string]interface{}{
+		"connection_count":      len(cp.connectionMapping),
+		"send_queue_length":     len(cp.sendQueue),
+		"tunnel_pool_size":      cp.tunnelPool.GetTunnelMappingLen(),
+		"accept_new_connection": cp.acceptNewConnection,
+	}
+	return connectionPoolInfo
+}
+
 
 // GetConnectionsInfo 获取所有连接的详细信息
 func (cp *ConnectionPool) GetTunnelsInfo() []map[string]interface{} {
