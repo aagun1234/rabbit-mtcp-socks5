@@ -492,18 +492,48 @@ var (
 	})
 
 	memAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rabbit_runtime_mem_alloc_bytes",
-		Help: "Bytes allocated and still in use",
+		Name: "rabbit_memstats_alloc_bytes",
+		Help: "Current number of bytes allocated by the application",
 	})
-
 	totalMemAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rabbit_runtime_total_mem_alloc_bytes",
-		Help: "Total bytes allocated (even if freed)",
+		Name: "rabbit_memstats_total_alloc_bytes",
+		Help: "Total number of bytes allocated by the application",
 	})
-
+	memHeapAlloc = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_alloc_bytes",
+		Help: "Current number of heap bytes allocated by the application",
+	})
 	memSys = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rabbit_runtime_mem_sys_bytes",
-		Help: "Total bytes obtained from OS",
+		Name: "rabbit_memstats_sys_bytes",
+		Help: "Total number of bytes obtained from the OS",
+	})
+	heapSys = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_sys_bytes",
+		Help: "Total number of heap bytes obtained from the OS",
+	})
+	heapIdle = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_idle_bytes",
+		Help: "Number of heap bytes waiting to be used",
+	})
+	heapInuse = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_inuse_bytes",
+		Help: "Number of heap bytes that are in use",
+	})
+	heapReleased = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_released_bytes",
+		Help: "Number of heap bytes released to the OS",
+	})
+	heapObjects = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_heap_objects",
+		Help: "Number of allocated heap objects",
+	})
+	objMallocs = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_mallocs_total",
+		Help: "Total number of memory allocations",
+	})
+	objFrees = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rabbit_memstats_frees_total",
+		Help: "Total number of memory frees",
 	})
 
 	gcPauseMs = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -535,10 +565,19 @@ func prom_init() {
 		memAlloc,
 		totalMemAlloc,
 		memSys,
+		memHeapAlloc,
+		heapSys,
+		heapIdle,
+		heapInuse,
+		heapReleased,
+		heapObjects,
+		objMallocs,
+		objFrees,
 		gcPauseMs,
 		gcCount,
 		lastGcTime,
 	)
+
 }
 
 func updatePrometheusMetrics(data map[string]interface{}) {
@@ -569,12 +608,37 @@ func updatePrometheusMetrics(data map[string]interface{}) {
 	if val, ok := data["mem_alloc"].(uint64); ok {
 		memAlloc.Set(float64(val))
 	}
+	if val, ok := data["mem_heap_alloc"].(uint64); ok {
+		memHeapAlloc.Set(float64(val))
+	}
 	if val, ok := data["total_mem_alloc"].(uint64); ok {
 		totalMemAlloc.Set(float64(val))
 	}
 	if val, ok := data["mem_sys"].(uint64); ok {
 		memSys.Set(float64(val))
 	}
+	if val, ok := data["heap_sys"].(uint64); ok {
+		heapSys.Set(float64(val))
+	}
+	if val, ok := data["heap_idle"].(uint64); ok {
+		heapIdle.Set(float64(val))
+	}
+	if val, ok := data["heap_inuse"].(uint64); ok {
+		heapInuse.Set(float64(val))
+	}
+	if val, ok := data["heap_released"].(uint64); ok {
+		heapReleased.Set(float64(val))
+	}
+	if val, ok := data["heap_objects"].(uint64); ok {
+		heapObjects.Set(float64(val))
+	}
+	if val, ok := data["obj_mallocs"].(uint64); ok {
+		objMallocs.Set(float64(val))
+	}
+	if val, ok := data["obj_release"].(uint64); ok {
+		objFrees.Set(float64(val))
+	}
+
 	if val, ok := data["gc_pause_ms"].(float64); ok {
 		gcPauseMs.Set(val)
 	}
