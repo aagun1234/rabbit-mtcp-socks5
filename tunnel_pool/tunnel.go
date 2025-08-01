@@ -207,21 +207,33 @@ func (tunnel *Tunnel) packThenSend(blk block.Block, retryQueue chan block.Block)
 		} else {
 			stats.ServerStats.AddSentBytes(uint64(n))
 		}
-	}
-
-	if (err != nil || n != int64(len(dataToSend))) && retryQueue != nil {
-		tunnel.logger.Warnf("Error when send bytes to tunnel: (n: %d, error: %v).\n", n, err)
-		// Tunnel down and message has not been fully sent.
-		tunnel.closeThenCancel()
-		if blk.Type == block.TypeData {
-			go func() {
-				retryQueue <- blk
-			}()
-		}
-		// Use new goroutine to avoid channel blocked
-	} else {
+		
+		// 成功发送，重置写入超时
 		tunnel.Conn.SetWriteDeadline(time.Time{})
 		tunnel.logger.Debugf("Copied data to tunnel successfully(n: %d).\n", n)
+		return
+	}
+
+	// 发送失败处理
+	tunnel.logger.Warnf("Error when send bytes to tunnel: (n: %d, error: %v).\n", n, err)
+	
+	// 关闭隧道
+	tunnel.closeThenCancel()
+	
+	// 只有数据块才需要重试
+	if blk.Type == block.TypeData && retryQueue != nil {
+		// 直接在当前协程中尝试发送，使用非阻塞方式
+		select {
+		case retryQueue <- blk:
+			// 发送成功
+			tunnel.logger.Debugf("Block %d put to retry queue successfully.\n", blk.BlockID)
+		case <-time.After(3 * time.Second):
+			// 发送超时
+			tunnel.logger.Warnf("Timeout when putting block %d to retry queue, data may be lost.\n", blk.BlockID)
+		case <-tunnel.ctx.Done():
+			// 上下文已取消，不再重试
+			tunnel.logger.Warnf("Context canceled when putting block %d to retry queue, data may be lost.\n", blk.BlockID)
+		}
 	}
 }
 
@@ -238,7 +250,10 @@ func (tunnel *Tunnel) InboundRelay(output chan<- block.Block) {
 		select {
 		case <-tunnel.ctx.Done():
 			// Should read all before leave, or packet will be lost
-			for {
+			tunnel.logger.Debugln("Context done, cleaning up tunnel connection.")
+			// 设置较短的读取超时，避免长时间阻塞
+			tunnel.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			for i := 0; i < 5; i++ { // 最多尝试读取5次，避免无限循环
 				// Will never be blocked because the tunnel is closed
 				blk, err := block.NewBlockFromReader(tunnel.Conn)
 				if err == nil {
@@ -255,10 +270,18 @@ func (tunnel *Tunnel) InboundRelay(output chan<- block.Block) {
 						stats.ServerStats.AddRecvBytes(receivedBytes)
 					}
 
-					output <- *blk
+					// 使用非阻塞方式发送，避免在关闭时阻塞
+					select {
+					case output <- *blk:
+						// 发送成功
+					case <-time.After(500 * time.Millisecond):
+						// 发送超时，记录日志
+						tunnel.logger.Warnf("Timeout when sending block to output channel after close.\n")
+						break
+					}
 
 				} else {
-					tunnel.logger.Debugf("Error when receiving block from tunnel after close: %v.\n", err)
+					tunnel.logger.Debugf("No more data or error when receiving block from tunnel after close: %v.\n", err)
 					break
 				}
 			}
@@ -344,7 +367,7 @@ func (tunnel *Tunnel) PingPong() {
 			}
 		}
 	}
-	tunnel.logger.InfoAln("PingPong ended.")
+
 }
 
 func (tunnel *Tunnel) GetPeerID() uint32 {

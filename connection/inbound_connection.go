@@ -18,8 +18,10 @@ type InboundConnection struct {
 	baseConnection
 	dataBuffer ByteRingBuffer
 
-	writeCtx context.Context
-	readCtx  context.Context
+	readCtx     context.Context
+	readCancel  context.CancelFunc
+	writeCtx    context.Context
+	writeCancel context.CancelFunc
 
 	readClosed  *atomic.Bool
 	writeClosed *atomic.Bool
@@ -40,11 +42,11 @@ func NewInboundConnection(sendQueue chan<- block.Block, ctx context.Context, rem
 			logger:           logger.NewLogger(fmt.Sprintf("[InboundConnection-%d]", connectionID)),
 		},
 		dataBuffer:  NewByteRingBuffer(block.MaxSize),
-		readCtx:     ctx,
-		writeCtx:    ctx,
 		readClosed:  atomic.NewBool(false),
 		writeClosed: atomic.NewBool(false),
 	}
+	c.readCtx, c.readCancel = context.WithCancel(ctx)
+	c.writeCtx, c.writeCancel = context.WithCancel(ctx)
 	c.logger.InfoAf("InboundConnection %d created.\n", connectionID)
 	c.SetLastActive()
 	return &c
@@ -192,11 +194,51 @@ func (c *InboundConnection) Write(b []byte) (n int, err error) {
 }
 
 func (c *InboundConnection) Close() error {
+	// 使用CAS确保只执行一次关闭操作
 	if c.closed.CAS(false, true) {
+		c.logger.Debugln("Closing InboundConnection")
+		// 发送断开连接消息
 		c.SendDisconnect(block.ShutdownBoth)
+		// 停止所有相关的relay
+		c.Stop()
+		// 取消上下文
+		c.readCancel()
+		c.writeCancel()
+		
+		// 安全关闭通道
+		c.closeChannels()
 	}
-	c.Stop()
 	return nil
+}
+
+// 安全关闭通道的辅助方法
+func (c *InboundConnection) closeChannels() {
+	// 使用defer和recover防止关闭已关闭通道导致的panic
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Warnf("Recovered from panic when closing channels: %v\n", r)
+		}
+	}()
+	
+	// 关闭接收队列
+	select {
+	case _, ok := <-c.recvQueue:
+		if ok {
+			close(c.recvQueue)
+		}
+	default:
+		close(c.recvQueue)
+	}
+	
+	// 关闭有序接收队列
+	select {
+	case _, ok := <-c.orderedRecvQueue:
+		if ok {
+			close(c.orderedRecvQueue)
+		}
+	default:
+		close(c.orderedRecvQueue)
+	}
 }
 
 func (c *InboundConnection) CloseRead() error {

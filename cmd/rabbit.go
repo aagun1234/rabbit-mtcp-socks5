@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aagun1234/rabbit-mtcp-socks5/client"
@@ -86,7 +89,7 @@ type Config struct {
 func NewDefaultConfig() *Config {
 	return &Config{
 		Mode:       "client",
-		AppName:    "rabbit-mtcp-ws",
+		AppName:    "rabbit-mtcp",
 		Verbose:    4,
 		RabbitAddr: []string{"ws://127.0.0.1:443/tunnel"},
 		Password:   "PASSWORD",
@@ -961,39 +964,114 @@ func main() {
 	// 初始化统计模块，使用20秒的历史窗口
 	stats.InitStats(20)
 	prom_init()
+	
+	// 设置信号处理，确保程序能够优雅退出
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	
+	// 创建一个上下文，用于控制程序的生命周期
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	
+	// 启动信号处理协程
+	go func() {
+		sig := <-sigChan
+		mainlogger.Infof("Received signal: %v, initiating graceful shutdown...", sig)
+		cancel() // 取消上下文，通知所有组件开始清理
+	}()
+	
 	if mcfg.mode == ClientMode {
 		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, "", true, mcfg.RetryFailedAddr)
 
 		// 使用 GetConnectionPool 方法获取连接池
 		ClientConnectionPool = c.Peer.GetConnectionPool()
 
+		// 设置清理函数
+		cleanupClient := func() {
+			mainlogger.Infoln("Cleaning up client resources...")
+			if ClientConnectionPool != nil {
+				// 调用连接池的StopRelay方法停止所有中继
+				ClientConnectionPool.StopRelay()
+			}
+			mainlogger.Infoln("Client resources cleaned up.")
+		}
+		
+		// 注册清理函数
+		defer cleanupClient()
+
 		if mcfg.StatusServer != "" {
 			go statusServer1(mcfg.StatusServer, mcfg.StatusACL, mcfg, &c)
 			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
 
-		// 检查listen参数是否以socks5://开头
-		if strings.HasPrefix(mcfg.Listen, "socks5://") {
-			mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
-			c.ServeForwardSocks5(mcfg.Listen)
-		} else {
-			mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
-			c.ServeForward(mcfg.Listen, mcfg.Dest)
+		// 在新的协程中启动服务，以便能够响应退出信号
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			// 检查listen参数是否以socks5://开头
+			if strings.HasPrefix(mcfg.Listen, "socks5://") {
+				mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
+				c.ServeForwardSocks5(mcfg.Listen)
+			} else {
+				mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
+				c.ServeForward(mcfg.Listen, mcfg.Dest)
+			}
+		}()
+		
+		// 等待退出信号或服务结束
+		select {
+		case <-ctx.Done():
+			mainlogger.Infoln("Shutdown signal received, stopping client...")
+		case <-serverDone:
+			mainlogger.Infoln("Client service stopped.")
 		}
-	} else {
-
+		
+	} else { // 服务端模式
 		s := server.NewServer(cipher, "", "", "")
+
+		// 设置清理函数
+		cleanupServer := func() {
+			mainlogger.Infoln("Cleaning up server resources...")
+			if ServerPeerGroup != nil {
+				// 获取所有连接池并停止它们
+				connectionPools := ServerPeerGroup.GetAllConnectionPools()
+				for _, pool := range connectionPools {
+					pool.StopRelay()
+				}
+			}
+			mainlogger.Infoln("Server resources cleaned up.")
+		}
+		
+		// 注册清理函数
+		defer cleanupServer()
 
 		if mcfg.StatusServer != "" {
 			go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
 			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
+		
 		// 保存服务端的 PeerGroup 到全局变量，用于在 statusServer 中获取连接信息
 		// 由于服务端可能有多个连接池（每个 ServerPeer 一个），我们需要通过 PeerGroup 获取所有连接池
 		ServerPeerGroup = s.GetPeerGroup()
-		mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
-		s.Serve(mcfg.RabbitAddr)
+		
+		// 在新的协程中启动服务，以便能够响应退出信号
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
+			s.Serve(mcfg.RabbitAddr)
+		}()
+		
+		// 等待退出信号或服务结束
+		select {
+		case <-ctx.Done():
+			mainlogger.Infoln("Shutdown signal received, stopping server...")
+		case <-serverDone:
+			mainlogger.Infoln("Server service stopped.")
+		}
 	}
+	
+	mainlogger.Infoln("Program exited gracefully.")
 }
 
 // 辅助函数：分割字符串并去除空白

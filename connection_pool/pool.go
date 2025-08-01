@@ -136,9 +136,37 @@ func (cp *ConnectionPool) sendRelay() {
 	}
 }
 
-func (cp *ConnectionPool) stopRelay() {
+// StopRelay 停止所有连接池中的中继，关闭所有连接，并清理资源
+func (cp *ConnectionPool) StopRelay() {
 	cp.logger.Infoln("Stop all ConnectionPool Relay.")
+	
+	// 取消上下文，这将触发所有连接的ctx.Done()，进而停止所有协程
 	cp.cancel()
+	
+	// 获取所有连接的副本，避免在遍历过程中修改map
+	cp.mappingLock.Lock()
+	connections := make([]connection.Connection, 0, len(cp.connectionMapping))
+	for _, conn := range cp.connectionMapping {
+		connections = append(connections, conn)
+	}
+	cp.mappingLock.Unlock()
+	
+	// 关闭所有连接
+	for _, conn := range connections {
+		conn.Close()
+	}
+	
+	// 清空连接映射
+	cp.mappingLock.Lock()
+	cp.connectionMapping = make(map[uint32]connection.Connection)
+	cp.mappingLock.Unlock()
+	
+	// 停止隧道池中的所有中继
+	if cp.tunnelPool != nil {
+		cp.tunnelPool.StopRelay()
+	}
+	
+	cp.logger.Infoln("All ConnectionPool Relay stopped.")
 }
 
 // GetConnectionsInfo 获取所有连接的详细信息

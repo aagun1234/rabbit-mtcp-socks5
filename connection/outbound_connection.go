@@ -37,17 +37,37 @@ func NewOutboundConnection(connectionID uint32, sendQueue chan<- block.Block, ct
 	return &c
 }
 
-func (oc *OutboundConnection) closeThenCancelWithOnceSend() {
-	oc.HalfOpenConn.Close()
+// 统一的关闭方法，确保资源正确清理
+func (oc *OutboundConnection) closeThenCancel(sendDisconnect bool) {
+	// 先关闭网络连接
+	if oc.HalfOpenConn != nil {
+		oc.HalfOpenConn.Close()
+	}
+	
+	// 取消上下文
 	oc.cancel()
-	if oc.closed.CAS(false, true) {
+	
+	// 关闭通道，避免协程泄漏
+	oc.closeChannels()
+	
+	// 如果需要发送断开连接消息
+	if sendDisconnect && oc.closed.CAS(false, true) {
 		oc.SendDisconnect(block.ShutdownBoth)
 	}
+	oc.logger.InfoAln("OutboundConnection closed and resources cleaned up.")
 }
 
-func (oc *OutboundConnection) closeThenCancel() {
-	oc.HalfOpenConn.Close()
-	oc.cancel()
+// 关闭通道的辅助方法
+func (oc *OutboundConnection) closeChannels() {
+	// 使用defer+recover防止关闭已关闭的通道导致panic
+	defer func() {
+		if r := recover(); r != nil {
+			oc.logger.Warnf("Recovered from panic when closing channels: %v\n", r)
+		}
+	}()
+	
+	close(oc.recvQueue)
+	close(oc.orderedRecvQueue)
 }
 
 // real connection -> ConnectionPool's SendQueue -> TunnelPool
@@ -63,31 +83,33 @@ func (oc *OutboundConnection) RecvRelay() {
 			oc.logger.InfoAf("OutboundConnection C->S %d bytes", n)
 			oc.HalfOpenConn.SetReadDeadline(time.Time{})
 		} else if err == io.EOF {
-			oc.logger.Debugln("EOF received from outbound connection.")
-			oc.closeThenCancelWithOnceSend()
-			return
-		} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			oc.logger.Debugln("Receive timeout from outbound connection.")
-		} else {
-			oc.logger.Errorf("Error when recv relay outbound connection: %v\n.", err)
-			oc.closeThenCancelWithOnceSend()
-			return
-		}
+				oc.logger.Debugln("EOF received from outbound connection.")
+				oc.closeThenCancel(true) // 发送断开连接消息
+				return
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				oc.logger.Debugln("Receive timeout from outbound connection.")
+			} else {
+				oc.logger.Errorf("Error when recv relay outbound connection: %v\n.", err)
+				oc.closeThenCancel(true) // 发送断开连接消息
+				return
+			}
 		select {
 		case <-oc.ctx.Done():
 			// Should read all before leave, or packet will be lost
 			for {
 				n, err := oc.HalfOpenConn.Read(recvBuffer)
-				if err == nil {
+				if err == nil && n > 0 {
 					oc.logger.Debugln("Data received from outbound connection successfully after close.")
 					oc.sendData(recvBuffer[:n])
 					// 更新接收字节计数
 					oc.RecvBytes.Add(uint64(n))
 				} else {
-					oc.logger.Debugf("Error when receiving data from outbound connection after close: %v.\n", err)
+					oc.logger.Debugf("No more data or error when receiving data from outbound connection after close: %v.\n", err)
 					break
 				}
 			}
+			// 确保资源被清理
+			oc.closeThenCancel(false) // 不需要发送断开连接消息，因为已经收到了关闭信号
 			return
 		default:
 			continue
@@ -120,7 +142,7 @@ func (oc *OutboundConnection) SendRelay() {
 					oc.HalfOpenConn.SetWriteDeadline(time.Time{})
 				} else {
 					oc.logger.Errorf("Error when send relay outbound connection: %v\n.", err)
-					oc.closeThenCancelWithOnceSend()
+					oc.closeThenCancel(true) // 发送断开连接消息
 				}
 			case block.TypeDisconnect:
 				if blk.BlockData[0] == block.ShutdownRead {
@@ -131,11 +153,11 @@ func (oc *OutboundConnection) SendRelay() {
 					oc.HalfOpenConn.CloseWrite()
 				} else {
 					oc.logger.Debugln("Send out DISCONNECT action.")
-					oc.closeThenCancel()
+					oc.closeThenCancel(true) // 发送断开连接消息
 				}
 			}
 		case <-oc.ctx.Done():
-			oc.closeThenCancelWithOnceSend()
+			oc.closeThenCancel(true) // 发送断开连接消息
 			return
 		}
 	}

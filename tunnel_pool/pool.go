@@ -41,6 +41,34 @@ func NewTunnelPool(peerID uint32, manager Manager, peerContext context.Context) 
 	return tp
 }
 
+// StopRelay 停止所有隧道的中继，取消上下文，关闭所有协程
+func (tp *TunnelPool) StopRelay() {
+	tp.logger.InfoAf("Stopping all relays for peer %d.\n", tp.peerID)
+	
+	// 取消上下文，这将触发所有隧道的ctx.Done()，进而停止所有协程
+	tp.cancel()
+	
+	// 获取所有隧道的副本，避免在遍历过程中修改map
+	tp.mutex.Lock()
+	tunnels := make([]*Tunnel, 0, len(tp.tunnelMapping))
+	for _, tunnel := range tp.tunnelMapping {
+		tunnels = append(tunnels, tunnel)
+	}
+	tp.mutex.Unlock()
+	
+	// 关闭所有隧道
+	for _, tunnel := range tunnels {
+		tunnel.closeThenCancel()
+	}
+	
+	// 清空隧道映射
+	tp.mutex.Lock()
+	tp.tunnelMapping = make(map[uint32]*Tunnel)
+	tp.mutex.Unlock()
+	
+	tp.logger.InfoAf("All relays stopped for peer %d.\n", tp.peerID)
+}
+
 // Add a tunnel to tunnelPool and start bi-relay
 func (tp *TunnelPool) AddTunnel(tunnel *Tunnel) {
 	tp.logger.Debugf("Tunnel %d added to Peer %d.\n", tunnel.tunnelID, tp.peerID)
