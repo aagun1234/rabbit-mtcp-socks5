@@ -1,12 +1,13 @@
+//go:build !windows
 // +build !windows
 
 package logger
 
 import (
+	"io"
 	"log"
 	"log/syslog"
 	"os"
-	"io"
 )
 
 const (
@@ -20,9 +21,10 @@ const (
 )
 
 var (
-	LEVEL int = LogLevelOff
-	AppName string = "rabbit-mtcp-ws"
-	UseSyslog bool = true
+	LEVEL        int            = LogLevelOff
+	AppName      string         = "rabbit-mtcp-ws"
+	UseSyslog    bool           = true
+	syslogWriter *syslog.Writer // 全局变量，用于存储syslog writer
 )
 
 type Logger struct {
@@ -37,10 +39,11 @@ func NewLogger(prefix string) *Logger {
 		if err != nil {
 			log.Fatal(err)
 		}
+		syslogWriter = sysLog // 存储syslog writer
 		// 创建多写入器，同时写入syslog和标准输出
 		multiWriter := io.MultiWriter(os.Stdout, sysLog)
 		log.SetOutput(multiWriter)
-	
+
 		return &Logger{
 			logger: log.New(multiWriter, prefix, log.LstdFlags),
 			level:  LEVEL,
@@ -53,6 +56,13 @@ func NewLogger(prefix string) *Logger {
 	}
 }
 
+// CloseSyslog 关闭syslog writer
+func CloseSyslog() {
+	if syslogWriter != nil {
+		syslogWriter.Close()
+	}
+}
+
 func (l *Logger) Logln(v string) {
 	l.logger.Println(v)
 
@@ -60,7 +70,6 @@ func (l *Logger) Logln(v string) {
 func (l *Logger) Logf(format string, v ...interface{}) {
 	l.logger.Printf(format, v...)
 }
-
 
 func (l *Logger) Debugln(v string) {
 	if l.level >= LogLevelDebug {
@@ -85,7 +94,6 @@ func (l *Logger) InfoAf(format string, v ...interface{}) {
 		l.logger.Printf("[Info] "+format, v...)
 	}
 }
-
 
 func (l *Logger) Infoln(v string) {
 	if l.level >= LogLevelInfo {

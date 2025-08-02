@@ -20,7 +20,6 @@ import (
 
 type Tunnel struct {
 	net.Conn
-	//websocket.Conn
 	ctx          context.Context
 	cancel       context.CancelFunc
 	tunnelID     uint32
@@ -36,14 +35,14 @@ type Tunnel struct {
 
 // Create a new tunnel from a net.Conn and cipher with random tunnelID
 // func NewActiveTunnel(conn net.Conn, ciph tunnel.Cipher, peerID uint32) (Tunnel, error) {
-func NewActiveTunnel(wsConn net.Conn, ciph tunnel.Cipher, peerID uint32) (Tunnel, error) {
+func NewActiveTunnel(wsConn *net.Conn, ciph tunnel.Cipher, peerID uint32) (Tunnel, error) {
 	tun := newTunnelWithID(wsConn, ciph, peerID)
 	tun.IsClientMode = true // 客户端主动创建隧道
 	return tun, tun.activeExchangePeerID()
 }
 
 // func NewPassiveTunnel(conn net.Conn, ciph tunnel.Cipher) (Tunnel, error) {
-func NewPassiveTunnel(wsConn net.Conn, ciph tunnel.Cipher) (Tunnel, error) {
+func NewPassiveTunnel(wsConn *net.Conn, ciph tunnel.Cipher) (Tunnel, error) {
 	tun := newTunnelWithID(wsConn, ciph, 0)
 	tun.IsClientMode = false // 服务端被动接受隧道
 	return tun, tun.passiveExchangePeerID()
@@ -51,11 +50,13 @@ func NewPassiveTunnel(wsConn net.Conn, ciph tunnel.Cipher) (Tunnel, error) {
 
 // Create a new tunnel from a net.Conn and cipher with given tunnelID
 // func newTunnelWithID(conn net.Conn, ciph tunnel.Cipher, peerID uint32) Tunnel {
-func newTunnelWithID(wsConn net.Conn, ciph tunnel.Cipher, peerID uint32) Tunnel {
+func newTunnelWithID(wsConn *net.Conn, ciph tunnel.Cipher, peerID uint32) Tunnel {
 	tunnelID := rand.Uint32()
+	ctx, cancel := context.WithCancel(context.Background())
 	tun := Tunnel{
-		Conn: tunnel.NewEncryptedConn(wsConn, ciph),
-		//Conn:     &WebsocketConnAdapter{Conn: wsConn, writeMu: sync.Mutex{}},
+		ctx:      ctx,
+		cancel:   cancel,
+		Conn:     tunnel.NewEncryptedConn(*wsConn, ciph),
 		peerID:   peerID,
 		tunnelID: tunnelID,
 		logger:   logger.NewLogger(fmt.Sprintf("[Tunnel-%d]", tunnelID)),
@@ -173,7 +174,11 @@ func (tunnel *Tunnel) OutboundRelay(normalQueue, retryQueue chan block.Block) {
 		case <-tunnel.ctx.Done():
 			tunnel.logger.InfoAf("Outbound relay(retry) ended. (PeerID: %d)", tunnel.peerID)
 			return
-		case blk := <-retryQueue:
+		case blk, ok := <-retryQueue:
+			if !ok {
+				tunnel.logger.InfoAf("Outbound relay(retry queue closed) ended. (PeerID: %d)", tunnel.peerID)
+				return
+			}
 			tunnel.packThenSend(blk, retryQueue)
 		default:
 		}
@@ -182,9 +187,17 @@ func (tunnel *Tunnel) OutboundRelay(normalQueue, retryQueue chan block.Block) {
 		case <-tunnel.ctx.Done():
 			tunnel.logger.InfoAf("Outbound relay(normal) ended. (PeerID: %d)", tunnel.peerID)
 			return
-		case blk := <-retryQueue:
+		case blk, ok := <-retryQueue:
+			if !ok {
+				tunnel.logger.InfoAf("Outbound relay(retry queue closed) ended. (PeerID: %d)", tunnel.peerID)
+				return
+			}
 			tunnel.packThenSend(blk, retryQueue)
-		case blk := <-normalQueue:
+		case blk, ok := <-normalQueue:
+			if !ok {
+				tunnel.logger.InfoAf("Outbound relay(normal queue closed) ended. (PeerID: %d)", tunnel.peerID)
+				return
+			}
 			tunnel.packThenSend(blk, retryQueue)
 		}
 	}
@@ -207,33 +220,23 @@ func (tunnel *Tunnel) packThenSend(blk block.Block, retryQueue chan block.Block)
 		} else {
 			stats.ServerStats.AddSentBytes(uint64(n))
 		}
-		
-		// 成功发送，重置写入超时
-		tunnel.Conn.SetWriteDeadline(time.Time{})
-		tunnel.logger.Debugf("Copied data to tunnel successfully(n: %d).\n", n)
-		return
 	}
 
-	// 发送失败处理
-	tunnel.logger.Warnf("Error when send bytes to tunnel: (n: %d, error: %v).\n", n, err)
-	
-	// 关闭隧道
-	tunnel.closeThenCancel()
-	
-	// 只有数据块才需要重试
-	if blk.Type == block.TypeData && retryQueue != nil {
-		// 直接在当前协程中尝试发送，使用非阻塞方式
-		select {
-		case retryQueue <- blk:
-			// 发送成功
-			tunnel.logger.Debugf("Block %d put to retry queue successfully.\n", blk.BlockID)
-		case <-time.After(3 * time.Second):
-			// 发送超时
-			tunnel.logger.Warnf("Timeout when putting block %d to retry queue, data may be lost.\n", blk.BlockID)
-		case <-tunnel.ctx.Done():
-			// 上下文已取消，不再重试
-			tunnel.logger.Warnf("Context canceled when putting block %d to retry queue, data may be lost.\n", blk.BlockID)
-		}
+	if (err != nil || n != int64(len(dataToSend))) && retryQueue != nil {
+		tunnel.logger.Warnf("Error when send bytes to tunnel: (n: %d, error: %v).\n", n, err)
+		// Tunnel down and message has not been fully sent.
+		tunnel.closeThenCancel()
+		go func() {
+			select {
+			case retryQueue <- blk:
+			case <-tunnel.ctx.Done():
+				tunnel.logger.Debugf("Tunnel context done, not retrying block.")
+			}
+		}()
+		// Use new goroutine to avoid channel blocked
+	} else {
+		tunnel.Conn.SetWriteDeadline(time.Time{})
+		tunnel.logger.Debugf("Copied data to tunnel successfully(n: %d).\n", n)
 	}
 }
 
@@ -249,41 +252,33 @@ func (tunnel *Tunnel) InboundRelay(output chan<- block.Block) {
 	for {
 		select {
 		case <-tunnel.ctx.Done():
-			// Should read all before leave, or packet will be lost
-			tunnel.logger.Debugln("Context done, cleaning up tunnel connection.")
-			// 设置较短的读取超时，避免长时间阻塞
-			tunnel.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			for i := 0; i < 5; i++ { // 最多尝试读取5次，避免无限循环
-				// Will never be blocked because the tunnel is closed
-				blk, err := block.NewBlockFromReader(tunnel.Conn)
-				if err == nil {
-					tunnel.logger.Debugf("Block received from tunnel(type: %d) successfully after close.\n", blk.Type)
+			// Attempt to read any remaining data once, then exit.
+			blk, err := block.NewBlockFromReader(tunnel.Conn)
+			if err == nil {
+				tunnel.logger.Debugf("Block received from tunnel(type: %d) successfully after close.\n", blk.Type)
 
-					// 更新接收字节统计
-					receivedBytes := uint64(len(blk.Pack()))
-					tunnel.RecvBytes += receivedBytes
+				// 更新接收字节统计
+				receivedBytes := uint64(len(blk.Pack()))
+				tunnel.RecvBytes += receivedBytes
 
-					// 根据模式更新全局统计
-					if tunnel.IsClientMode {
-						stats.ClientStats.AddRecvBytes(receivedBytes)
-					} else {
-						stats.ServerStats.AddRecvBytes(receivedBytes)
-					}
-
-					// 使用非阻塞方式发送，避免在关闭时阻塞
-					select {
-					case output <- *blk:
-						// 发送成功
-					case <-time.After(500 * time.Millisecond):
-						// 发送超时，记录日志
-						tunnel.logger.Warnf("Timeout when sending block to output channel after close.\n")
-						break
-					}
-
+				// 根据模式更新全局统计
+				if tunnel.IsClientMode {
+					stats.ClientStats.AddRecvBytes(receivedBytes)
 				} else {
-					tunnel.logger.Debugf("No more data or error when receiving block from tunnel after close: %v.\n", err)
-					break
+					stats.ServerStats.AddRecvBytes(receivedBytes)
 				}
+
+				// 安全地发送数据到输出通道
+				select {
+				case output <- *blk:
+					// 成功发送
+				default:
+					// 通道已满或已关闭，忽略此数据
+					tunnel.logger.Warnf("Cannot send block to output channel, possibly closed or full")
+				}
+
+			} else {
+				tunnel.logger.Debugf("Error when receiving block from tunnel after close: %v.\n", err)
 			}
 			tunnel.logger.InfoAf("Inbound relay ended. (PeerID: %d)", tunnel.peerID)
 			return
@@ -309,7 +304,8 @@ func (tunnel *Tunnel) InboundRelay(output chan<- block.Block) {
 					stats.ServerStats.AddRecvBytes(receivedBytes)
 				}
 
-				if blk.Type == block.TypePing {
+				switch blk.Type {
+				case block.TypePing:
 					clatency := int64(binary.LittleEndian.Uint64(blk.BlockData))
 					tunnel.SetLatencyNano(clatency)
 					tunnel.logger.Infof("Ping-Pong client latency: %d us\n", clatency/1000)
@@ -318,14 +314,21 @@ func (tunnel *Tunnel) InboundRelay(output chan<- block.Block) {
 					tunnel.logger.Debugf("Sending Pong to tunnel, with payload timestamp: %s", time.Unix(0, blk.TimeStamp).Format("2006-01-02 15:04:05.999999"))
 					tunnel.packThenSend(pongblk, nil)
 
-				} else if blk.Type == block.TypePong {
+				case block.TypePong:
 					tunnel.logger.Debugf("InboundRelay received TypePong.\n")
 					timestamp := int64(binary.LittleEndian.Uint64(blk.BlockData))
 					tunnel.SetLatencyNanoSince(timestamp)
 					tunnel.logger.Infof("Ping-Pong Latency: %d us", tunnel.GetLatencyNano()/1000)
-				} else {
-
-					output <- *blk
+				default:
+					// 安全地发送数据到输出通道
+					select {
+					case output <- *blk:
+						// 成功发送
+					case <-tunnel.ctx.Done():
+						// 上下文已取消，退出
+						tunnel.logger.InfoAf("Inbound relay(context done) ended. (PeerID: %d)", tunnel.peerID)
+						return
+					}
 				}
 
 			}
@@ -360,14 +363,12 @@ func (tunnel *Tunnel) PingPong() {
 				tunnel.packThenSend(blk, nil)
 			}
 			if (time.Now().UnixNano()-tunnel.GetLastActive())/1e9 > int64(PingInterval+TunnelRecvTimeoutSec) {
-				tunnel.logger.Warnln("PingPong timeout, going to close tunnel.")
+				tunnel.logger.Errorf("PingPong timeout.")
 				tunnel.IsActive = false
 				tunnel.closeThenCancel()
-				break
 			}
 		}
 	}
-
 }
 
 func (tunnel *Tunnel) GetPeerID() uint32 {

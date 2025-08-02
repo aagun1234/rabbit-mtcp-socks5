@@ -35,22 +35,15 @@ func newBlockProcessor(ctx context.Context, removeFromPool context.CancelFunc) b
 // TODO: If waiting a packet for TIMEOUT, break the connection; otherwise re-countdown for next waiting packet.
 func (x *blockProcessor) OrderedRelay(connection Connection) {
 	x.logger.InfoAf("Ordered Relay of Connection %d started.\n", connection.GetConnectionID())
-	// 定义清理缓存的辅助函数
-	clearCache := func() {
-		if len(x.cache) > 0 {
-			x.logger.Debugf("Clearing %d blocks from cache for Connection %d\n", len(x.cache), connection.GetConnectionID())
-			for k := range x.cache {
-				delete(x.cache, k)
-			}
-		}
-	}
-	
-	// 确保在函数退出时清理缓存
-	defer clearCache()
-	
 	for {
 		select {
-		case blk := <-connection.GetRecvQueue():
+		case blk, ok := <-connection.GetRecvQueue():
+			// 检查通道是否已关闭
+			if !ok {
+				x.logger.InfoAf("Ordered Relay of Connection %d stopped due to closed channel.\n", connection.GetConnectionID())
+				return
+			}
+			
 			if blk.BlockID+1 > x.lastRecvBlockID {
 				// Update lastRecvBlockID
 				x.lastRecvBlockID = blk.BlockID + 1
@@ -58,43 +51,33 @@ func (x *blockProcessor) OrderedRelay(connection Connection) {
 			if x.recvBlockID == blk.BlockID {
 				// Can send directly
 				x.logger.Debugf("Send Block %d directly\n", blk.BlockID)
-				// 使用非阻塞方式发送，避免在关闭时阻塞
+				
+				// 安全地发送数据块
 				select {
 				case connection.GetOrderedRecvQueue() <- blk:
-					// 发送成功
-				case <-time.After(500 * time.Millisecond):
-					// 发送超时，可能是接收方已关闭
-					x.logger.Warnf("Timeout when sending Block %d to ordered queue\n", blk.BlockID)
-					// 如果发送超时，可能是连接已关闭，应该退出
-					x.removeFromPool()
-					return
+					// 成功发送
 				case <-x.relayCtx.Done():
-					// 上下文已取消，应该退出
-					x.logger.InfoAf("Context canceled while sending Block %d\n", blk.BlockID)
+					x.logger.InfoAf("Ordered Relay of Connection %d stopped during send.\n", connection.GetConnectionID())
 					return
 				}
+				
 				x.recvBlockID++
 				for {
-					blk, ok := x.cache[x.recvBlockID]
+					blk1, ok := x.cache[x.recvBlockID]
 					if !ok {
 						break
 					}
-					x.logger.Debugf("Send Block %d from cache\n", blk.BlockID)
-					// 使用非阻塞方式发送缓存中的数据块
+					x.logger.Debugf("Send Block %d from cache\n", blk1.BlockID)
+					
+					// 安全地发送缓存数据块
 					select {
-					case connection.GetOrderedRecvQueue() <- blk:
-						// 发送成功
-					case <-time.After(500 * time.Millisecond):
-						// 发送超时，可能是接收方已关闭
-						x.logger.Warnf("Timeout when sending cached Block %d to ordered queue\n", blk.BlockID)
-						// 如果发送超时，可能是连接已关闭，应该退出
-						x.removeFromPool()
-						return
+					case connection.GetOrderedRecvQueue() <- blk1:
+						// 成功发送
 					case <-x.relayCtx.Done():
-						// 上下文已取消，应该退出
-						x.logger.InfoAf("Context canceled while sending cached Block %d\n", blk.BlockID)
+						x.logger.InfoAf("Ordered Relay of Connection %d stopped during cache send.\n", connection.GetConnectionID())
 						return
 					}
+					
 					delete(x.cache, x.recvBlockID)
 					x.recvBlockID++
 				}
@@ -115,12 +98,9 @@ func (x *blockProcessor) OrderedRelay(connection Connection) {
 				continue
 			}
 			x.logger.Warnf("Connection %d is going to be killed due to timeout.\n", connection.GetConnectionID())
-			// 清理缓存，避免内存泄漏
-			clearCache()
 			x.removeFromPool()
 		case <-x.relayCtx.Done():
 			x.logger.InfoAf("Ordered Relay of Connection %d stopped.\n", connection.GetConnectionID())
-			// 清理缓存已经在defer中处理
 			return
 		}
 	}

@@ -41,34 +41,6 @@ func NewTunnelPool(peerID uint32, manager Manager, peerContext context.Context) 
 	return tp
 }
 
-// StopRelay 停止所有隧道的中继，取消上下文，关闭所有协程
-func (tp *TunnelPool) StopRelay() {
-	tp.logger.InfoAf("Stopping all relays for peer %d.\n", tp.peerID)
-	
-	// 取消上下文，这将触发所有隧道的ctx.Done()，进而停止所有协程
-	tp.cancel()
-	
-	// 获取所有隧道的副本，避免在遍历过程中修改map
-	tp.mutex.Lock()
-	tunnels := make([]*Tunnel, 0, len(tp.tunnelMapping))
-	for _, tunnel := range tp.tunnelMapping {
-		tunnels = append(tunnels, tunnel)
-	}
-	tp.mutex.Unlock()
-	
-	// 关闭所有隧道
-	for _, tunnel := range tunnels {
-		tunnel.closeThenCancel()
-	}
-	
-	// 清空隧道映射
-	tp.mutex.Lock()
-	tp.tunnelMapping = make(map[uint32]*Tunnel)
-	tp.mutex.Unlock()
-	
-	tp.logger.InfoAf("All relays stopped for peer %d.\n", tp.peerID)
-}
-
 // Add a tunnel to tunnelPool and start bi-relay
 func (tp *TunnelPool) AddTunnel(tunnel *Tunnel) {
 	tp.logger.Debugf("Tunnel %d added to Peer %d.\n", tunnel.tunnelID, tp.peerID)
@@ -85,7 +57,6 @@ func (tp *TunnelPool) AddTunnel(tunnel *Tunnel) {
 		stats.ServerStats.IncrementTunnelCount()
 	}
 
-	tunnel.ctx, tunnel.cancel = context.WithCancel(tp.ctx)
 	go func() {
 		<-tunnel.ctx.Done()
 		tp.RemoveTunnel(tunnel)
@@ -94,7 +65,11 @@ func (tp *TunnelPool) AddTunnel(tunnel *Tunnel) {
 	go tunnel.OutboundRelay(tp.sendQueue, tp.sendRetryQueue)
 	go tunnel.InboundRelay(tp.recvQueue)
 	// 启动Ping-Pong协程
-	go tunnel.PingPong()
+	if PingInterval > 0 {
+		go tunnel.PingPong()
+	} else {
+		tp.logger.Warnln("Do not ping-pong.\n")
+	}
 }
 
 // Remove a tunnel from tunnelPool and stop bi-relay
@@ -102,13 +77,20 @@ func (tp *TunnelPool) RemoveTunnel(tunnel *Tunnel) {
 	tp.logger.Debugf("Tunnel %d to peer %d removed from pool.\n", tunnel.tunnelID, tunnel.peerID)
 	tp.mutex.Lock()
 	defer tp.mutex.Unlock()
-	if tunnel, ok := tp.tunnelMapping[tunnel.tunnelID]; ok {
-		delete(tp.tunnelMapping, tunnel.tunnelID)
+	if tunnel1, ok := tp.tunnelMapping[tunnel.tunnelID]; ok {
+		// 首先从映射中删除隧道，防止其他协程访问
+		delete(tp.tunnelMapping, tunnel1.tunnelID)
+		
+		// 确保隧道已关闭（通过调用closeThenCancel）
+		// 注意：tunnel.ctx.Done()会在closeThenCancel被调用时触发
+		// 所以这里不需要再次调用Close
+		
+		// 通知管理器隧道已移除
 		tp.manager.Notify(tp)
 		go tp.manager.DecreaseNotify(tp)
 
 		// 更新连接计数
-		if tunnel.IsClientMode {
+		if tunnel1.IsClientMode {
 			stats.ClientStats.DecrementTunnelCount()
 		} else {
 			stats.ServerStats.DecrementTunnelCount()
@@ -128,7 +110,6 @@ func (tp *TunnelPool) GetTunnelMappingLen() int {
 	return len(tp.tunnelMapping)
 }
 
-
 // GetConnectionsInfo 获取所有连接的详细信息
 func (tp *TunnelPool) GetTunnelConnsInfo() []map[string]interface{} {
 	tp.mutex.Lock()
@@ -140,6 +121,7 @@ func (tp *TunnelPool) GetTunnelConnsInfo() []map[string]interface{} {
 		tunnInfo := map[string]interface{}{
 			"tunnel_id":     tunn.tunnelID,
 			"peer_id":       tp.peerID,
+			"is_active":     tunn.IsActive,
 			"last_activity": tunn.GetLastActiveStr(),
 			"latency_nano":  tunn.GetLatencyNano(),
 			"sent_bytes":    tunn.SentBytes,
@@ -147,8 +129,8 @@ func (tp *TunnelPool) GetTunnelConnsInfo() []map[string]interface{} {
 			//"latency_nano":  fmt.Sprintf("%.2f us", tunn.GetLatencyNano()/1000),
 			//"sent_bytes":    fmt.Sprintf("%.2f K", tunn.SentBytes/1024),
 			//"recv_bytes":    fmt.Sprintf("%.2f K", tunn.RecvBytes/1024),
-			"ws_raddr": tunn.Conn.RemoteAddr(),
-			"ws_laddr": tunn.Conn.LocalAddr(),
+			"ws_remote_addr": tunn.Conn.RemoteAddr(),
+			"ws_local_addr":  tunn.Conn.LocalAddr(),
 		}
 		tp.logger.Debugf("GetTunnelConnsInfo : TunnelID %d.", tunn.tunnelID)
 
@@ -169,4 +151,37 @@ func (tp *TunnelPool) GetTunnelPoolInfo() map[string]interface{} {
 		"tunnel_count":            len(tp.tunnelMapping),
 	}
 	return tunnelPoolInfo
+}
+
+// Close 安全地关闭隧道池及其所有资源
+func (tp *TunnelPool) Close() {
+	tp.logger.InfoAf("Closing tunnel pool for peer %d\n", tp.peerID)
+	
+	// 取消上下文，通知所有使用此上下文的协程退出
+	tp.cancel()
+	
+	// 关闭所有隧道
+	tp.mutex.Lock()
+	tunnels := make([]*Tunnel, 0, len(tp.tunnelMapping))
+	for _, tunnel := range tp.tunnelMapping {
+		tunnels = append(tunnels, tunnel)
+	}
+	tp.mutex.Unlock()
+	
+	// 在锁外关闭隧道，避免死锁
+	for _, tunnel := range tunnels {
+		tunnel.closeThenCancel()
+	}
+	
+	// 等待所有隧道关闭
+	// 注意：这里不使用等待，因为RemoveTunnel会在隧道关闭时被调用
+	// 而是确保所有通道都被安全关闭
+	
+	// 安全地关闭通道
+	// 注意：先关闭发送通道，再关闭接收通道
+	close(tp.sendQueue)
+	close(tp.sendRetryQueue)
+	close(tp.recvQueue)
+	
+	tp.logger.InfoAf("Tunnel pool for peer %d closed\n", tp.peerID)
 }

@@ -33,6 +33,10 @@ func (c *Client) Dial(address string) connection.HalfOpenConn {
 	return c.Peer.Dial(address)
 }
 
+func (c *Client) Cancel() {
+	c.Peer.Stop()
+}
+
 func (c *Client) ServeForward(listen, dest string) error {
 	c.logger.Infof("Listen on %s for target %s \n", listen, dest)
 	listener, err := net.Listen("tcp", listen)

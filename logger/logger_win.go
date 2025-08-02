@@ -8,6 +8,11 @@ import (
 
 )
 
+// CloseSyslog 关闭syslog writer (Windows下为空实现)
+func CloseSyslog() {
+	// No-op for Windows
+}
+
 const (
 	LogLevelOff = iota
 	LogLevelFatal

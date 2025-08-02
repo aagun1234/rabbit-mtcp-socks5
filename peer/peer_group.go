@@ -9,12 +9,9 @@ import (
 	"github.com/aagun1234/rabbit-mtcp-socks5/tunnel"
 	"github.com/aagun1234/rabbit-mtcp-socks5/tunnel_pool"
 
-	//"github.com/gorilla/websocket"
-
 	//"net"
 
 	"sync"
-	// "github.com/gorilla/websocket"
 )
 
 type PeerGroup struct {
@@ -22,6 +19,10 @@ type PeerGroup struct {
 	cipher      tunnel.Cipher
 	peerMapping map[uint32]*ServerPeer
 	logger      *logger.Logger
+}
+
+func (sp *ServerPeer) Stop() {
+	sp.Peer.Stop()
 }
 
 func NewPeerGroup(cipher tunnel.Cipher) PeerGroup {
@@ -62,10 +63,10 @@ func (pg *PeerGroup) AddTunnel(tunnel *tunnel_pool.Tunnel) error {
 }
 
 // Like AddTunnel, add a raw connection
-func (pg *PeerGroup) AddTunnelFromConn(conn net.Conn) error {
+func (pg *PeerGroup) AddTunnelFromConn(conn *net.Conn) error {
 	tun, err := tunnel_pool.NewPassiveTunnel(conn, pg.cipher)
 	if err != nil {
-		conn.Close()
+		(*conn).Close()
 		return err
 	}
 
@@ -107,4 +108,14 @@ func (pg *PeerGroup) GetAllTunnelPools() []*tunnel_pool.TunnelPool {
 	}
 
 	return pools
+}
+
+func (pg *PeerGroup) Stop() {
+	pg.lock.Lock()
+	defer pg.lock.Unlock()
+
+	for peerID, peer := range pg.peerMapping {
+		pg.logger.InfoAf("Stopping Server Peer %d.\n", peerID)
+		peer.Stop()
+	}
 }

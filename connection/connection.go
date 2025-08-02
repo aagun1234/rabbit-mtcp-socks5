@@ -6,8 +6,6 @@ import (
 
 	"github.com/aagun1234/rabbit-mtcp-socks5/block"
 	"github.com/aagun1234/rabbit-mtcp-socks5/logger"
-
-	//	"github.com/gorilla/websocket"
 	"go.uber.org/atomic"
 )
 

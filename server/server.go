@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	// "github.com/gorilla/websocket"
 )
 
 type Server struct {
@@ -28,6 +27,10 @@ type Server struct {
 // GetPeerGroup 返回服务器的 PeerGroup
 func (s *Server) GetPeerGroup() *peer.PeerGroup {
 	return &s.peerGroup
+}
+
+func (s *Server) Cancel() {
+	s.peerGroup.Stop()
 }
 
 func NewServer(cipher tunnel.Cipher, authkey, keyfile, certfile string) Server {
@@ -53,7 +56,7 @@ func (s *Server) ServeThread(address string, wg *sync.WaitGroup) error {
 			s.logger.Errorf("Error when accept connection: %v.\n", err)
 			continue
 		}
-		err = s.peerGroup.AddTunnelFromConn(conn)
+		err = s.peerGroup.AddTunnelFromConn(&conn)
 		if err != nil {
 			s.logger.Errorf("Error when add tunnel to tunnel pool: %v.\n", err)
 		}

@@ -73,8 +73,10 @@ func (cp *ConnectionPool) addConnection(conn connection.Connection) {
 	cp.mappingLock.Lock()
 	defer cp.mappingLock.Unlock()
 	cp.connectionMapping[conn.GetConnectionID()] = conn
+
 	stats.ClientStats.IncrementConnectionCount()
 	stats.ServerStats.IncrementConnectionCount()
+
 	go conn.OrderedRelay(conn)
 }
 
@@ -83,6 +85,8 @@ func (cp *ConnectionPool) removeConnection(conn connection.Connection) {
 	cp.mappingLock.Lock()
 	defer cp.mappingLock.Unlock()
 	if _, ok := cp.connectionMapping[conn.GetConnectionID()]; ok {
+		//conn.Close()
+
 		delete(cp.connectionMapping, conn.GetConnectionID())
 		stats.ClientStats.DecrementConnectionCount()
 		stats.ServerStats.DecrementConnectionCount()
@@ -95,14 +99,20 @@ func (cp *ConnectionPool) recvRelay() {
 	cp.logger.InfoAln("Recv Relay started.")
 	for {
 		select {
-		case blk := <-cp.tunnelPool.GetRecvQueue():
+		case blk, ok := <-cp.tunnelPool.GetRecvQueue():
+			// 检查通道是否已关闭
+			if !ok {
+				cp.logger.InfoAln("Recv Relay stopped due to closed channel.")
+				return
+			}
+			
 			connID := blk.ConnectionID
 			var conn connection.Connection
-			var ok bool
+			var connOk bool
 			cp.mappingLock.RLock()
-			conn, ok = cp.connectionMapping[connID]
+			conn, connOk = cp.connectionMapping[connID]
 			cp.mappingLock.RUnlock()
-			if !ok {
+			if !connOk {
 				if cp.acceptNewConnection {
 					conn = cp.NewPooledOutboundConnection(blk.ConnectionID)
 					cp.logger.InfoAln("Connection created and added to connectionPool.")
@@ -111,8 +121,17 @@ func (cp *ConnectionPool) recvRelay() {
 					continue
 				}
 			}
-			conn.RecvBlock(blk)
-			cp.logger.Debugf("Block %d(type: %d) put to connRecvQueue.\n", blk.BlockID, blk.Type)
+			
+			// 安全地发送数据块
+			select {
+			case <-cp.ctx.Done():
+				cp.logger.InfoAln("Recv Relay stopped during block processing.")
+				return
+			default:
+				conn.RecvBlock(blk)
+				cp.logger.Debugf("Block %d(type: %d) put to connRecvQueue.\n", blk.BlockID, blk.Type)
+			}
+			
 		case <-cp.ctx.Done():
 			cp.logger.InfoAln("Recv Relay stopped.")
 			return
@@ -126,9 +145,22 @@ func (cp *ConnectionPool) sendRelay() {
 	cp.logger.InfoAln("Send Relay started.")
 	for {
 		select {
-		case blk := <-cp.sendQueue:
-			cp.tunnelPool.GetSendQueue() <- blk
-			cp.logger.Debugf("Block %d(type: %d) put to connSendQueue.\n", blk.BlockID, blk.Type)
+		case blk, ok := <-cp.sendQueue:
+			// 检查通道是否已关闭
+			if !ok {
+				cp.logger.InfoAln("Send Relay stopped due to closed channel.")
+				return
+			}
+			
+			// 安全地发送数据块到隧道池
+			select {
+			case <-cp.ctx.Done():
+				cp.logger.InfoAln("Send Relay stopped during block processing.")
+				return
+			case cp.tunnelPool.GetSendQueue() <- blk:
+				cp.logger.Debugf("Block %d(type: %d) put to connSendQueue.\n", blk.BlockID, blk.Type)
+			}
+			
 		case <-cp.ctx.Done():
 			cp.logger.InfoAln("Send Relay stopped.")
 			return
@@ -136,37 +168,9 @@ func (cp *ConnectionPool) sendRelay() {
 	}
 }
 
-// StopRelay 停止所有连接池中的中继，关闭所有连接，并清理资源
-func (cp *ConnectionPool) StopRelay() {
+func (cp *ConnectionPool) stopRelay() {
 	cp.logger.Infoln("Stop all ConnectionPool Relay.")
-	
-	// 取消上下文，这将触发所有连接的ctx.Done()，进而停止所有协程
 	cp.cancel()
-	
-	// 获取所有连接的副本，避免在遍历过程中修改map
-	cp.mappingLock.Lock()
-	connections := make([]connection.Connection, 0, len(cp.connectionMapping))
-	for _, conn := range cp.connectionMapping {
-		connections = append(connections, conn)
-	}
-	cp.mappingLock.Unlock()
-	
-	// 关闭所有连接
-	for _, conn := range connections {
-		conn.Close()
-	}
-	
-	// 清空连接映射
-	cp.mappingLock.Lock()
-	cp.connectionMapping = make(map[uint32]connection.Connection)
-	cp.mappingLock.Unlock()
-	
-	// 停止隧道池中的所有中继
-	if cp.tunnelPool != nil {
-		cp.tunnelPool.StopRelay()
-	}
-	
-	cp.logger.Infoln("All ConnectionPool Relay stopped.")
 }
 
 // GetConnectionsInfo 获取所有连接的详细信息
@@ -206,7 +210,6 @@ func (cp *ConnectionPool) GetConnectionPoolInfo() map[string]interface{} {
 	}
 	return connectionPoolInfo
 }
-
 
 // GetConnectionsInfo 获取所有连接的详细信息
 func (cp *ConnectionPool) GetTunnelsInfo() []map[string]interface{} {

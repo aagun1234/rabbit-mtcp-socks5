@@ -20,7 +20,16 @@ type Peer struct {
 }
 
 func (p *Peer) Stop() {
+	// 取消上下文，通知所有使用此上下文的协程退出
 	p.cancel()
+	
+	// 关闭隧道池
+	p.tunnelPool.Close()
+	
+	// 连接池会在上下文取消时自动关闭
+	// 但为了确保安全，我们可以显式关闭它的通道
+	// 注意：这里不需要额外的操作，因为连接池的recvRelay和sendRelay
+	// 会在上下文取消时退出，并且removeConnection会在连接被移除时关闭通道
 }
 
 // GetConnectionPool 返回连接池，供外部包访问

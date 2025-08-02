@@ -4,8 +4,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"errors"
-	"golang.org/x/crypto/chacha20poly1305"
 	"strings"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 var ErrCipherNotSupported = errors.New("cipher not supported")
@@ -70,7 +71,7 @@ func NewAEADCipher(name string, key []byte, password string) (Cipher, error) {
 	}
 
 	if choice, ok := aeadList[name]; ok {
-		if key == nil || len(key) == 0 {
+		if len(key) == 0 {
 			key = kdf(password, choice.KeySize)
 		}
 		if len(key) != choice.KeySize {

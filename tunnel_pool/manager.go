@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	//"github.com/gorilla/websocket"
 	"go.uber.org/atomic"
 )
 
@@ -115,6 +114,7 @@ func (cm *ClientManager) DecreaseNotify(pool *TunnelPool) {
 			cm.logger.Debugf("Need %d new tunnels to %s now.\n", tunnelToCreate, endpoint)
 			dialTimeout := time.Duration(DialTimeoutSec) * time.Second
 			conn, err := net.DialTimeout("tcp", endpoint, dialTimeout)
+
 			//conn, err := net.Dial("tcp", endpoint) //cm.endpoint)
 			if err != nil {
 				cm.logger.Errorf("Error when dial to %s: %v.\n", endpoint, err)
@@ -141,18 +141,20 @@ func (cm *ClientManager) DecreaseNotify(pool *TunnelPool) {
 				lastfailed = endpoint
 				continue
 
+			} else {
+				cm.logger.Debugf("Connected to %v", endpoint)
 			}
 			if lastfailed == endpoint { //last failed successed, reset
 				lastfailed = ""
 				retryweight[endpoint] = 0
 			}
-			tun, err := NewActiveTunnel(conn, cm.cipher, cm.peerID) //创建一个tunnel并交换ID（握手）
+			tun, err := NewActiveTunnel(&conn, cm.cipher, cm.peerID) //创建一个tunnel并交换ID（握手）
 			if err != nil {
 				cm.logger.Errorf("Error when create active tunnel: %v\n", err)
 				time.Sleep(time.Duration(ErrorWaitSec) * time.Second)
 				continue
 			}
-			cm.logger.Debugf("ClientManager DecreaseNotify Set ReadDeadLine unlimit.\n")
+			cm.logger.Debugf("Add tunnel %d to pool.\n", tun.tunnelID)
 			conn.SetReadDeadline(time.Time{})
 			// 移除这里的 PingPong 调用，让它只在 pool.AddTunnel 中启动
 			pool.AddTunnel(&tun)
@@ -184,6 +186,11 @@ func (sm *ServerManager) Notify(pool *TunnelPool) {
 	tunnelCount := len(pool.tunnelMapping)
 
 	if tunnelCount == 0 && sm.triggered.CAS(false, true) {
+		// 先取消之前的协程（如果存在）
+		if sm.cancelCountDownFunc != nil {
+			sm.cancelCountDownFunc()
+		}
+
 		var destroyAfterCtx context.Context
 		destroyAfterCtx, sm.cancelCountDownFunc = context.WithCancel(context.Background())
 		go func(*ServerManager) {
@@ -198,7 +205,9 @@ func (sm *ServerManager) Notify(pool *TunnelPool) {
 	}
 
 	if tunnelCount != 0 && sm.triggered.CAS(true, false) {
-		sm.cancelCountDownFunc()
+		if sm.cancelCountDownFunc != nil {
+			sm.cancelCountDownFunc()
+		}
 	}
 }
 

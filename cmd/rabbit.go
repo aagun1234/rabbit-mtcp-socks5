@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // 自动注册 /debug/pprof 路由
 	"os"
 	"os/signal"
 	"strings"
@@ -28,7 +29,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var Version = "1.0.10 tcp/socks5" //"No version information"
+var Version = "1.0.10 ws/socks5" //"No version information"
 
 var (
 	DialTimeoutSec    = 6
@@ -53,19 +54,20 @@ type Config struct {
 	configFile string   `yaml:"-"`           // 配置文件路径 (不写入YAML)
 	AppName    string   `yaml:"appname"`     // 日志中标识
 	Verbose    int      `yaml:"verbose"`     // 日志级别: 1-5`
-	RabbitAddr []string `yaml:"rabbit-addr"` // 服务端WebSocket URL列表 (例如: ["ws://server1:8081/tunnel", "wss://server2:8082/tunnel"])
+	RabbitAddr []string `yaml:"rabbit-addr"` // 服务端列表 (例如: ["ws://server1:8081/tunnel", "wss://server2:8082/tunnel"])
 	Password   string   `yaml:"password"`    //加密用
 	AEADCipher string   `yaml:"aead-cipher"` //加密用,CHACHA20-IETF-POLY1305,AES-128-GCM,AES-192-GCM,AES-256-GCM
 	// Client 模式配置
-	Listen  string `yaml:"listen"`  // 客户端侦听的本地TCP地址 (例如: "127.0.0.1:1080"或socks5://127.0.0.1:1080)
-	Dest    string `yaml:"dest"`    // 目标服务
-	TunnelN int    `yaml:"tunnelN"` //客户端发起的连接数
-	//	AuthKey         string `yaml:"authkey"`      // 认证密钥
-	//	TLSCertFile     string `yaml:"tls-certfile"` // 服务端证书文件路径
-	//	TLSKeyFile      string `yaml:"tls-keyfile"`  // 服务端密钥文件路径
-	//	Insecure        bool   `yaml:"insecure"`     // 客户端是否跳过服务端证书验证InsecureSkipVerify
-	UseSyslog       bool `yaml:"use-syslog"`   // 客户端是否跳过服务端证书验证InsecureSkipVerify
-	RetryFailedAddr bool `yaml:"retry-failed"` // 对于客户端连接失败的rabbit-addr，是否反复重试，如果否，则不会重试连接，直到所有的都连不上
+	Listen          string `yaml:"listen"`       // 客户端侦听的本地TCP地址 (例如: "127.0.0.1:1080"或socks5://127.0.0.1:1080)
+	Dest            string `yaml:"dest"`         // 目标服务
+	TunnelN         int    `yaml:"tunnelN"`      //客户端发起的连接数
+	AuthKey         string `yaml:"authkey"`      // 认证密钥
+	TLSCertFile     string `yaml:"tls-certfile"` // 服务端证书文件路径
+	TLSKeyFile      string `yaml:"tls-keyfile"`  // 服务端密钥文件路径
+	Insecure        bool   `yaml:"insecure"`     // 客户端是否跳过服务端证书验证InsecureSkipVerify
+	UseSyslog       bool   `yaml:"use-syslog"`   // 客户端是否跳过服务端证书验证InsecureSkipVerify
+	RetryFailedAddr bool   `yaml:"retry-failed"` // 对于客户端连接失败的rabbit-addr，是否反复重试，如果否，则不会重试连接，直到所有的都连不上
+	MemProf         string `yaml:"mem-prof"`     // 内存分析侦听端口
 
 	StatusServer string `yaml:"status-server"` // 状态服务侦听的本地TCP地址 (例如: "127.0.0.1:8010")
 	StatusACL    string `yaml:"status-acl"`    // 状态服务ACL
@@ -88,21 +90,18 @@ type Config struct {
 // NewDefaultConfig 返回一个默认配置实例
 func NewDefaultConfig() *Config {
 	return &Config{
-		Mode:       "client",
-		AppName:    "rabbit-mtcp",
-		Verbose:    4,
-		RabbitAddr: []string{"ws://127.0.0.1:443/tunnel"},
-		Password:   "PASSWORD",
-		AEADCipher: "CHACHA20-IETF-POLY1305",
-		Listen:     "127.0.0.1:1080",
-		Dest:       "",
-		TunnelN:    4,
-		//		AuthKey:                 "",
-		//		TLSCertFile:             "",
-		//		TLSKeyFile:              "",
-		//		Insecure:                true,
+		Mode:                    "client",
+		AppName:                 "rabbit-mtcp",
+		Verbose:                 4,
+		RabbitAddr:              []string{"ws://127.0.0.1:443/tunnel"},
+		Password:                "PASSWORD",
+		AEADCipher:              "CHACHA20-IETF-POLY1305",
+		Listen:                  "127.0.0.1:1080",
+		Dest:                    "",
+		TunnelN:                 4,
 		UseSyslog:               true,
 		RetryFailedAddr:         true,
+		MemProf:                 "",
 		PingIntervalSec:         30,
 		DialTimeoutSec:          6,
 		RecvTimeoutSec:          20,
@@ -128,22 +127,19 @@ func LoadConfig() (*Config, error) {
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	var (
-		modeArg       string
-		appNameArg    string
-		configFileArg string
-		verboseArg    int
-		rabbitAddrArg string
-		passwordArg   string
-		aeadCipherArg string
-		listenArg     string
-		destArg       string
-		tunnelNArg    int
-		//		authKeyArg                 string
-		//		tlsCertFileArg             string
-		//		tlsKeyFileArg              string
-		//		insecureArg                bool
+		modeArg                    string
+		appNameArg                 string
+		configFileArg              string
+		verboseArg                 int
+		rabbitAddrArg              string
+		passwordArg                string
+		aeadCipherArg              string
+		listenArg                  string
+		destArg                    string
+		tunnelNArg                 int
 		useSyslogArg               bool
 		retryFailedAddrArg         bool
+		memProfArg                 string
 		statusServerArg            string
 		statusACLArg               string
 		pingIntervalSecArg         int
@@ -168,18 +164,15 @@ func LoadConfig() (*Config, error) {
 	fs.StringVar(&modeArg, "mode", "", "running mode(s or c)")
 	fs.StringVar(&appNameArg, "appname", "", "Application name in syslog")
 	fs.IntVar(&verboseArg, "verbose", 0, "verbose level(0~6)")
-	fs.StringVar(&rabbitAddrArg, "rabbit-addr", "", "Comma-separated list of server WebSocket URLs")
+	fs.StringVar(&rabbitAddrArg, "rabbit-addr", "", "Comma-separated list of servers")
 	fs.StringVar(&aeadCipherArg, "aead-cipher", "", "aead-cipher, CHACHA20-IETF-POLY1305,AES-128-GCM,AES-192-GCM,AES-256-GCM, default: CHACHA20-IETF-POLY1305")
 	fs.StringVar(&passwordArg, "password", "", "password")
 	fs.StringVar(&listenArg, "listen", "", "[Client Only] listen address, eg: 127.0.0.1:2333 or socks5://127.0.0.1:1080")
 	fs.StringVar(&destArg, "dest", "", "[Client Only] destination address, eg: shadowsocks server address")
 	fs.IntVar(&tunnelNArg, "tunnelN", 0, "[Client Only] number of tunnels to use in rabbit-tcp")
-	//	fs.StringVar(&authKeyArg, "authkey", "", "Websocket authkey, eg: mysecret")
-	//	fs.StringVar(&tlsCertFileArg, "tls-certfile", "", "[Server Only] TLS cert file path, eg: /root/server.crt")
-	//	fs.StringVar(&tlsKeyFileArg, "tls-keyfile", "", "[Server Only] TLS key file path, eg: /root/server.key")
-	//	fs.BoolVar(&insecureArg, "insecure", false, "InsecureSkipVerify")
 	fs.BoolVar(&useSyslogArg, "use-syslog", false, "Write to systemlog")
 	fs.BoolVar(&retryFailedAddrArg, "retry-failed", false, "[Client Only] retry failed rabbit-addr")
+	fs.StringVar(&memProfArg, "mem-prof", "", "Memory profile listen address")
 	fs.StringVar(&statusServerArg, "status-server", "", "Sataus server listen address")
 	fs.StringVar(&statusACLArg, "status-acl", "", "Status server ACL")
 	fs.IntVar(&pingIntervalSecArg, "ping-interval", 0, "Ping-pong interval, default 30(seconds)")
@@ -201,8 +194,8 @@ func LoadConfig() (*Config, error) {
 
 	// version
 	if printVersion || printVersion1 {
-		log.Println("Rabbit TCP ws (https://github.com/aagun1234/rabbit-mtcp-socks5/)")
-		//		log.Println("Websocket version of Rabbit TCP (https://github.com/ihciah/rabbit-tcp)")
+		log.Println("Rabbit TCP (https://github.com/aagun1234/rabbit-mtcp-socks5/)")
+		log.Println("from Rabbit TCP (https://github.com/ihciah/rabbit-tcp)")
 		log.Printf("Version: %s.\n", Version)
 		return nil, nil
 	}
@@ -257,11 +250,11 @@ func LoadConfig() (*Config, error) {
 	if flagsSeen["rabbit-addr"] {
 		cfg.RabbitAddr = splitAndTrim(rabbitAddrArg, ",")
 	}
-	if flagsSeen["aead-cipher"] {
-		cfg.AEADCipher = aeadCipherArg
-	}
 	if flagsSeen["password"] {
 		cfg.Password = passwordArg
+	}
+	if flagsSeen["aead-cipher"] {
+		cfg.AEADCipher = aeadCipherArg
 	}
 	if flagsSeen["listen"] {
 		cfg.Listen = listenArg
@@ -272,18 +265,9 @@ func LoadConfig() (*Config, error) {
 	if flagsSeen["tunnelN"] {
 		cfg.TunnelN = tunnelNArg
 	}
-	//	if flagsSeen["authkey"] {
-	//		cfg.AuthKey = authKeyArg
-	//	}
-	//	if flagsSeen["tls-certfile"] {
-	//		cfg.TLSCertFile = tlsCertFileArg
-	//	}
-	//	if flagsSeen["tls-keyfile"] {
-	//		cfg.TLSKeyFile = tlsKeyFileArg
-	//	}
-	//	if flagsSeen["insecure"] {
-	//		cfg.Insecure = insecureArg
-	//	}
+	if flagsSeen["mem-prof"] {
+		cfg.MemProf = memProfArg
+	}
 	if flagsSeen["retry-failed"] {
 		cfg.RetryFailedAddr = retryFailedAddrArg
 	}
@@ -666,7 +650,6 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 			acls[index] = acl + "/32"
 		}
 	}
-
 	// 解析基本认证信息
 	var username, password string
 	if atIndex := strings.Index(listen, "@"); atIndex > 0 {
@@ -705,9 +688,9 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 		json.NewEncoder(w).Encode(cfg)
 	})
 
-	handler.HandleFunc("/statu/", func(w http.ResponseWriter, r *http.Request) {
+	handler.HandleFunc("/status/", func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		statlogger.InfoAf("%s request status config", ip)
+		statlogger.InfoAf("%s request for status", ip)
 		isAllowed, err := IsIPInSubnets(ip, acls)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -778,6 +761,7 @@ func statusServer1(listen, acl string, cfg *Config, c *client.Client) {
 			statlogger.Debugf("Status: %v", status)
 			json.NewEncoder(w).Encode(status)
 		case "/status/metrics":
+			statlogger.Debugf("prometheus metrics: %v", statsData)
 			updatePrometheusMetrics(statsData)
 			promhttp.Handler().ServeHTTP(w, r)
 		default:
@@ -805,7 +789,6 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			acls[index] = acl + "/32"
 		}
 	}
-
 	// 解析基本认证信息
 	var username, password string
 	if atIndex := strings.Index(listen, "@"); atIndex > 0 {
@@ -846,7 +829,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 
 	handler.HandleFunc("/status/", func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		statlogger.InfoAf("%s request status config", ip)
+		statlogger.InfoAf("%s request for status", ip)
 		isAllowed, err := IsIPInSubnets(ip, acls)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -890,6 +873,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			connectionPools := ServerPeerGroup.GetAllConnectionPools()
 			statlogger.Debugf("Length of connectionPools: %d", len(connectionPools))
 			tunnelPools := ServerPeerGroup.GetAllTunnelPools()
+
 			// 遍历所有连接池，获取连接信息
 			for _, pool := range connectionPools {
 				connPoolsInfo = append(connPoolsInfo, pool.GetConnectionPoolInfo())
@@ -929,6 +913,7 @@ func statusServer2(listen, acl string, cfg *Config, s *server.Server) {
 			statlogger.Debugf("Status: %v", status)
 			json.NewEncoder(w).Encode(status)
 		case "/status/metrics":
+			statlogger.Debugf("prometheus metrics: %v", statsData)
 			updatePrometheusMetrics(statsData)
 			promhttp.Handler().ServeHTTP(w, r)
 		default:
@@ -949,6 +934,7 @@ func checkBasicAuth(r *http.Request, username, password string) bool {
 }
 
 func main() {
+
 	pass, mcfg := parseFlags()
 	if !pass {
 		return
@@ -958,120 +944,90 @@ func main() {
 	logger.UseSyslog = mcfg.UseSyslog
 	mainlogger := logger.NewLogger("[Main]")
 
-	mainlogger.Debugf("mode: %v, password: %v, addr: %v, listen: %v, dest: %v, tunnelN: %v, verbose: %v\n", mcfg.Mode, mcfg.Password, mcfg.RabbitAddr, mcfg.Listen, mcfg.Dest, mcfg.TunnelN, mcfg.Verbose)
+	// 添加内存分析
+	if mcfg.MemProf != "" {
+		//f, _ := os.Create("/" + mcfg.AppName + "_mem.prof")
+		//defer pprof.WriteHeapProfile(f)
+		go func() {
+			mainlogger.Infof("%v", http.ListenAndServe(mcfg.MemProf, nil))
+		}()
+	}
+
+	mainlogger.Debugf("mode: %v, password: %v, addr: %v, listen: %v, dest: %v, cipher: %v, tunnelN: %v, verbose: %v\n", mcfg.Mode, mcfg.Password, mcfg.RabbitAddr, mcfg.Listen, mcfg.Dest, mcfg.AEADCipher, mcfg.TunnelN, mcfg.Verbose)
 	cipher, _ := tunnel.NewAEADCipher(mcfg.AEADCipher, nil, mcfg.Password)
 
 	// 初始化统计模块，使用20秒的历史窗口
-	stats.InitStats(20)
+	statsCtx, statsCancel := context.WithCancel(context.Background())
+	stats.InitStats(statsCtx, 20)
 	prom_init()
-	
-	// 设置信号处理，确保程序能够优雅退出
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	
-	// 创建一个上下文，用于控制程序的生命周期
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	
-	// 启动信号处理协程
-	go func() {
-		sig := <-sigChan
-		mainlogger.Infof("Received signal: %v, initiating graceful shutdown...", sig)
-		cancel() // 取消上下文，通知所有组件开始清理
-	}()
-	
 	if mcfg.mode == ClientMode {
-		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, "", true, mcfg.RetryFailedAddr)
+		c := client.NewClient(mcfg.TunnelN, mcfg.RabbitAddr, cipher, mcfg.AuthKey, mcfg.Insecure, mcfg.RetryFailedAddr)
 
 		// 使用 GetConnectionPool 方法获取连接池
 		ClientConnectionPool = c.Peer.GetConnectionPool()
-
-		// 设置清理函数
-		cleanupClient := func() {
-			mainlogger.Infoln("Cleaning up client resources...")
-			if ClientConnectionPool != nil {
-				// 调用连接池的StopRelay方法停止所有中继
-				ClientConnectionPool.StopRelay()
-			}
-			mainlogger.Infoln("Client resources cleaned up.")
-		}
-		
-		// 注册清理函数
-		defer cleanupClient()
 
 		if mcfg.StatusServer != "" {
 			go statusServer1(mcfg.StatusServer, mcfg.StatusACL, mcfg, &c)
 			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
 
-		// 在新的协程中启动服务，以便能够响应退出信号
-		serverDone := make(chan struct{})
-		go func() {
-			defer close(serverDone)
-			// 检查listen参数是否以socks5://开头
-			if strings.HasPrefix(mcfg.Listen, "socks5://") {
-				mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
-				c.ServeForwardSocks5(mcfg.Listen)
-			} else {
-				mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
-				c.ServeForward(mcfg.Listen, mcfg.Dest)
-			}
-		}()
-		
-		// 等待退出信号或服务结束
-		select {
-		case <-ctx.Done():
-			mainlogger.Infoln("Shutdown signal received, stopping client...")
-		case <-serverDone:
-			mainlogger.Infoln("Client service stopped.")
-		}
-		
-	} else { // 服务端模式
-		s := server.NewServer(cipher, "", "", "")
-
-		// 设置清理函数
-		cleanupServer := func() {
-			mainlogger.Infoln("Cleaning up server resources...")
-			if ServerPeerGroup != nil {
-				// 获取所有连接池并停止它们
-				connectionPools := ServerPeerGroup.GetAllConnectionPools()
-				for _, pool := range connectionPools {
-					pool.StopRelay()
+		// 检查listen参数是否以socks5://开头
+		if strings.HasPrefix(mcfg.Listen, "socks5://") {
+			mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
+			go func() {
+				if strings.HasPrefix(mcfg.Listen, "socks5://") {
+					mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
+					c.ServeForwardSocks5(mcfg.Listen)
+				} else {
+					mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
+					c.ServeForward(mcfg.Listen, mcfg.Dest)
 				}
+			}()
+			// Wait for interrupt signal to gracefully shut down the server
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+			mainlogger.Infoln("Shutting down client...")
+			c.Cancel()
+			mainlogger.Infoln("Client shut down.")
+			statsCancel()
+			logger.CloseSyslog() // 添加syslog关闭
+		} else if mcfg.mode == ServerMode {
+			s := server.NewServer(cipher, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile)
+			ServerPeerGroup = s.GetPeerGroup()
+
+			if mcfg.StatusServer != "" {
+				go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
+				mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 			}
-			mainlogger.Infoln("Server resources cleaned up.")
+
+			go func() {
+				s.Serve(mcfg.RabbitAddr)
+			}()
+			// Wait for interrupt signal to gracefully shut down the server
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+			mainlogger.Infoln("Shutting down server...")
+			s.Cancel()
+			mainlogger.Infoln("Server shut down.")
+			statsCancel()
+			logger.CloseSyslog() // 添加syslog关闭
 		}
-		
-		// 注册清理函数
-		defer cleanupServer()
+	} else {
+
+		s := server.NewServer(cipher, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile)
 
 		if mcfg.StatusServer != "" {
 			go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
 			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
-		
 		// 保存服务端的 PeerGroup 到全局变量，用于在 statusServer 中获取连接信息
 		// 由于服务端可能有多个连接池（每个 ServerPeer 一个），我们需要通过 PeerGroup 获取所有连接池
 		ServerPeerGroup = s.GetPeerGroup()
-		
-		// 在新的协程中启动服务，以便能够响应退出信号
-		serverDone := make(chan struct{})
-		go func() {
-			defer close(serverDone)
-			mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
-			s.Serve(mcfg.RabbitAddr)
-		}()
-		
-		// 等待退出信号或服务结束
-		select {
-		case <-ctx.Done():
-			mainlogger.Infoln("Shutdown signal received, stopping server...")
-		case <-serverDone:
-			mainlogger.Infoln("Server service stopped.")
-		}
+		mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
+		s.Serve(mcfg.RabbitAddr)
 	}
-	
-	mainlogger.Infoln("Program exited gracefully.")
 }
 
 // 辅助函数：分割字符串并去除空白

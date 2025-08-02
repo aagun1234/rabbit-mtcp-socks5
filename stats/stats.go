@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -154,7 +155,7 @@ var (
 )
 
 // InitStats 初始化全局统计实例
-func InitStats(historySize int) {
+func InitStats(ctx context.Context, historySize int) {
 	once.Do(func() {
 		ClientStats = NewStats(historySize)
 		ServerStats = NewStats(historySize)
@@ -164,9 +165,14 @@ func InitStats(historySize int) {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 
-			for range ticker.C {
-				ClientStats.UpdateHistory()
-				ServerStats.UpdateHistory()
+			for {
+				select {
+				case <-ticker.C:
+					ClientStats.UpdateHistory()
+					ServerStats.UpdateHistory()
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 	})
