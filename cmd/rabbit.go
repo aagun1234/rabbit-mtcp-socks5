@@ -975,58 +975,45 @@ func main() {
 		if strings.HasPrefix(mcfg.Listen, "socks5://") {
 			mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
 			go func() {
-				if strings.HasPrefix(mcfg.Listen, "socks5://") {
-					mainlogger.Infof("Starting SOCKS5 proxy with address: %s\n", mcfg.Listen)
-					c.ServeForwardSocks5(mcfg.Listen)
-				} else {
-					mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
-					c.ServeForward(mcfg.Listen, mcfg.Dest)
-				}
+				c.ServeForwardSocks5(mcfg.Listen)
 			}()
-			// Wait for interrupt signal to gracefully shut down the server
-			quit := make(chan os.Signal, 1)
-			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-			<-quit
-			mainlogger.Infoln("Shutting down client...")
-			c.Cancel()
-			mainlogger.Infoln("Client shut down.")
-			statsCancel()
-			logger.CloseSyslog() // 添加syslog关闭
-		} else if mcfg.mode == ServerMode {
-			s := server.NewServer(cipher, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile)
-			ServerPeerGroup = s.GetPeerGroup()
-
-			if mcfg.StatusServer != "" {
-				go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
-				mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
-			}
-
+		} else {
+			mainlogger.Infof("Starting TCP forward from %s to %s\n", mcfg.Listen, mcfg.Dest)
 			go func() {
-				s.Serve(mcfg.RabbitAddr)
+				c.ServeForward(mcfg.Listen, mcfg.Dest)
 			}()
-			// Wait for interrupt signal to gracefully shut down the server
-			quit := make(chan os.Signal, 1)
-			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-			<-quit
-			mainlogger.Infoln("Shutting down server...")
-			s.Cancel()
-			mainlogger.Infoln("Server shut down.")
-			statsCancel()
-			logger.CloseSyslog() // 添加syslog关闭
 		}
-	} else {
-
+		// Wait for interrupt signal to gracefully shut down the server
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		mainlogger.Infoln("Shutting down client...")
+		c.Cancel()
+		mainlogger.Infoln("Client shut down.")
+		statsCancel()
+		logger.CloseSyslog() // 添加syslog关闭
+	} else if mcfg.mode == ServerMode {
 		s := server.NewServer(cipher, mcfg.AuthKey, mcfg.TLSKeyFile, mcfg.TLSCertFile)
+		ServerPeerGroup = s.GetPeerGroup()
 
 		if mcfg.StatusServer != "" {
 			go statusServer2(mcfg.StatusServer, mcfg.StatusACL, mcfg, &s)
 			mainlogger.Infof("Starting status server with address: %s\n", mcfg.StatusServer)
 		}
-		// 保存服务端的 PeerGroup 到全局变量，用于在 statusServer 中获取连接信息
-		// 由于服务端可能有多个连接池（每个 ServerPeer 一个），我们需要通过 PeerGroup 获取所有连接池
-		ServerPeerGroup = s.GetPeerGroup()
-		mainlogger.Infof("Starting server with address: %s\n", mcfg.RabbitAddr)
-		s.Serve(mcfg.RabbitAddr)
+
+		go func() {
+			s.Serve(mcfg.RabbitAddr)
+		}()
+		// Wait for interrupt signal to gracefully shut down the server
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		mainlogger.Infoln("Shutting down server...")
+		s.Cancel()
+		mainlogger.Infoln("Server shut down.")
+		statsCancel()
+		logger.CloseSyslog() // 添加syslog关闭
+
 	}
 }
 
